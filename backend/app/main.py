@@ -91,7 +91,13 @@ def main() -> None:
     else:
         LOG.info("首帧已就绪，开始提供网页服务")
 
-    # 启动时清理过期文件 + 后台滚存
+    # 启动时：封装残留分片、清理过期文件 + 后台滚存
+    try:
+        fixed = media_index.finalize_orphan_parts()
+        if fixed:
+            LOG.info("启动封装残留录像 %s 个", len(fixed))
+    except Exception as e:
+        LOG.warning("启动封装残留录像失败: %s", e)
     try:
         cleaned = media_index.cleanup_expired(int(settings.get("retention_days", 7)))
         if cleaned["removed"]:

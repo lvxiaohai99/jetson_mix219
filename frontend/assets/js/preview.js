@@ -20,6 +20,7 @@
   let mpegtsPlayer = null;
 
   function setStatus(t){ statusEl.textContent = t; }
+  window.setStatus = setStatus;
   function pad2(n){ return String(n).padStart(2,'0'); }
   function tickOsd(){
     const d = new Date();
@@ -260,5 +261,12 @@
   tickOsd(); setInterval(tickOsd, 1000); applyOsdVisible();
   syncState();
   setInterval(syncRecordButtons, 5000);
-  setInterval(refreshCalendar, 30000);
+  // 日历绿点轻量刷新；正在看视频/全屏时不会拆掉播放器
+  setInterval(() => {
+    if (window.MediaCalendar && typeof window.MediaCalendar.softRefresh === 'function') {
+      window.MediaCalendar.softRefresh().catch(()=>{});
+    } else {
+      refreshCalendar();
+    }
+  }, 30000);
 })();

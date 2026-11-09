@@ -202,11 +202,33 @@ video.playback { width:100%; background:#000; border-radius:10px; max-height:62v
 .cal-day-panel h2 { margin:0 0 .4rem; font-size:.92rem; }
 .cal-day-panel ul { margin:0; padding-left:0; list-style:none; }
 .cal-day-panel li { margin:0; }
+.day-row {
+  display:flex; align-items:center; gap:.25rem;
+  border-bottom: 1px solid rgba(51,65,85,.45);
+}
 .day-item {
-  width:100%; text-align:left; border:0; background:transparent; color:#93c5fd;
+  flex:1; min-width:0; text-align:left; border:0; background:transparent; color:#93c5fd;
   padding:.28rem 0; cursor:pointer; font-size:.82rem; border-radius:0;
 }
 .day-item:hover { color:#bfdbfe; background:rgba(37,99,235,.15); }
+.btn-del {
+  flex:0 0 auto; border:0; border-radius:6px;
+  padding:.2rem .45rem; font-size:.75rem; cursor:pointer;
+  background:#7f1d1d; color:#fecaca;
+}
+.btn-del:hover { background:#991b1b; color:#fff; }
+.preview-actions {
+  display:flex; align-items:center; gap:.5rem;
+  margin:.2rem 0 .4rem; font-size:.8rem; color:#cbd5e1;
+  word-break:break-all;
+}
+.preview-actions a { color:#93c5fd; }
+.live-actions { margin: .25rem 0 .5rem; }
+#btn-refresh-live {
+  background:#2563eb; color:#fff; border:0; border-radius:8px;
+  padding:.4rem .75rem; cursor:pointer; font-size:.82rem;
+}
+#btn-refresh-live:hover { background:#1d4ed8; }
 .day-preview { margin-top:.55rem; }
 .day-preview img, .day-preview video {
   max-width:100%; max-height:22vh; border-radius:8px; background:#000; display:block;

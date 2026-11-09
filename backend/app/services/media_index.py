@@ -68,6 +68,9 @@ def _iter_media_files() -> list[tuple[Path, str, datetime]]:
             for p in folder.glob(pat):
                 if not p.is_file() or p.name.startswith("."):
                     continue
+                # 预览缓存 / 临时文件不进日历
+                if ".preview." in p.name or p.name.endswith(".tmp.mp4"):
+                    continue
                 # 有正式 mp4 时忽略同名 avi；有正式 mp4 时忽略仍残留的 .part
                 if p.suffix.lower() == ".avi" and p.with_suffix(".mp4").exists():
                     continue
@@ -140,19 +143,26 @@ def day_items(date_str: str, active_recording: str | None = None) -> dict:
         if kind == "recording":
             stem = path.name
             if stem.endswith(".part.mp4"):
-                in_progress = True
                 display_name = stem.replace(".part.mp4", ".mp4")
-                playable = True  # 分片文件可预览
+                # 只有当前正在录的分片才标「录像中」；残留 part 当未完成文件
+                if active_recording and (
+                    display_name == active_recording or path.name == active_recording
+                    or path.name == active_recording.replace(".mp4", ".part.mp4")
+                ):
+                    in_progress = True
+                    playable = False  # 边录边播会转圈，前端不直接播
+                else:
+                    in_progress = False
+                    playable = False
             elif active_recording and path.name == active_recording:
-                # 兼容旧写入器：正在写的标准 mp4 通常还没有 moov
                 part = path.with_suffix(".part.mp4")
                 if part.exists():
                     url_name = part.name
                     in_progress = True
-                    playable = True
+                    playable = False
                 else:
                     in_progress = True
-                    playable = is_playable_mp4(path)
+                    playable = False
             else:
                 playable = is_playable_mp4(path)
         items.append(
@@ -170,6 +180,68 @@ def day_items(date_str: str, active_recording: str | None = None) -> dict:
         )
     items.sort(key=lambda x: x["time"])
     return {"date": date_str, "items": items}
+
+
+_SAFE_NAME = re.compile(
+    r"^(?:snapshot_\d{8}_\d{6}\.jpg|record_\d{8}_\d{6}(?:\.part)?\.(?:mp4|avi))$",
+    re.IGNORECASE,
+)
+
+
+def resolve_media_path(name: str) -> tuple[Path, str] | None:
+    """校验文件名并解析到 snapshots/recordings。返回 (path, kind) 或 None。"""
+    if not name or "/" in name or "\\" in name or ".." in name:
+        return None
+    if not _SAFE_NAME.match(name):
+        return None
+    if name.lower().startswith("snapshot_"):
+        path = SNAP_DIR / name
+        kind = "snapshot"
+    else:
+        path = RECORD_DIR / name
+        kind = "recording"
+    return path, kind
+
+
+def delete_media_file(name: str) -> dict:
+    """删除截图或录像，并清理同名残留（part/avi/mp4）。"""
+    resolved = resolve_media_path(name)
+    if resolved is None:
+        raise ValueError("非法文件名")
+    path, kind = resolved
+    removed: list[str] = []
+
+    candidates = [path]
+    if kind == "recording":
+        # 无论传入的是 .mp4 / .part.mp4 / .avi，尽量清干净
+        if name.endswith(".part.mp4"):
+            base = name[: -len(".part.mp4")]
+        else:
+            base = Path(name).stem
+            if base.endswith(".part"):
+                base = base[: -len(".part")]
+        candidates.extend(
+            [
+                RECORD_DIR / f"{base}.mp4",
+                RECORD_DIR / f"{base}.part.mp4",
+                RECORD_DIR / f"{base}.preview.mp4",
+                RECORD_DIR / f"{base}.avi",
+            ]
+        )
+
+    seen: set[Path] = set()
+    for p in candidates:
+        rp = p.resolve() if p.exists() else p
+        if rp in seen:
+            continue
+        seen.add(rp)
+        if p.exists() and p.is_file():
+            p.unlink()
+            removed.append(p.name)
+
+    if not removed:
+        raise FileNotFoundError(name)
+    return {"ok": True, "kind": kind, "removed": removed}
 
 
 def current_usage_bytes() -> int:
@@ -219,6 +291,45 @@ def cleanup_expired(retention_days: int) -> dict:
         except Exception as e:
             LOG.warning("删除过期文件失败 %s: %s", path, e)
     return {"cutoff": cutoff.isoformat(sep=" ", timespec="seconds"), "removed": removed, "kept": kept}
+
+
+def finalize_orphan_parts(skip_names: set[str] | None = None) -> list[str]:
+    """把残留的 .part.mp4 尽量封装成标准 mp4；失败则保留供手动删除。
+
+    skip_names：正在写入的文件名（含 .mp4 / .part.mp4），避免动到当前录制。
+    """
+    done: list[str] = []
+    skip = {n for n in (skip_names or set()) if n}
+    if not RECORD_DIR.exists():
+        return done
+    for part in RECORD_DIR.glob("record_*.part.mp4"):
+        final_name = part.name.replace(".part.mp4", ".mp4")
+        if part.name in skip or final_name in skip:
+            continue
+        if part.stat().st_size < 1024:
+            part.unlink(missing_ok=True)
+            continue
+        final = Path(str(part)[: -len(".part.mp4")] + ".mp4")
+        if final.exists() and final.stat().st_size > 0:
+            part.unlink(missing_ok=True)
+            continue
+        try:
+            subprocess.check_call(
+                [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-i", str(part),
+                    "-c", "copy",
+                    "-movflags", "+faststart",
+                    str(final),
+                ],
+                timeout=180,
+            )
+            part.unlink(missing_ok=True)
+            done.append(final.name)
+            LOG.info("残留分片已封装: %s", final.name)
+        except Exception as e:
+            LOG.warning("残留分片封装失败 %s: %s", part.name, e)
+    return done
 
 
 def retention_loop(get_days_callable, interval_sec: float = 600.0) -> None:

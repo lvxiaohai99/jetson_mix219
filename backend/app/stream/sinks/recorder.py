@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -16,15 +17,56 @@ from backend.app.stream.hub import FrameHub
 LOG = logging.getLogger("webcam.recorder")
 
 
+def remux_preview(part_path: Path, preview_path: Path) -> dict:
+    """把当前已写入的分片封装成可拖动进度条的预览 MP4（延迟几秒即可）。"""
+    if not part_path.exists() or part_path.stat().st_size < 4096:
+        raise RuntimeError("录像还太短，稍后再试")
+    tmp = preview_path.with_suffix(".tmp.mp4")
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+        "-i", str(part_path),
+        "-c", "copy",
+        "-movflags", "+faststart",
+        str(tmp),
+    ]
+    subprocess.check_call(cmd, timeout=60)
+    if not tmp.exists() or tmp.stat().st_size < 1024:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError("预览封装失败")
+    tmp.replace(preview_path)
+    duration = 0.0
+    try:
+        out = subprocess.check_output(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(preview_path),
+            ],
+            text=True,
+            timeout=10,
+        ).strip()
+        duration = float(out)
+    except Exception:
+        pass
+    return {
+        "file": preview_path.name,
+        "url": f"/files/recordings/{preview_path.name}",
+        "size_mb": round(preview_path.stat().st_size / 1024 / 1024, 2),
+        "duration": duration,
+        "as_of": datetime.now().strftime("%H:%M:%S"),
+    }
+
+
 class FFmpegH264Writer:
-    """边录边可预览：写入分片 MP4；停止后再封装成带 moov 的标准文件。"""
+    """边录边可预览：写入分片 MP4；定期/按需封装 .preview.mp4；停止后再出正式文件。"""
 
     def __init__(self, path: Path, width: int, height: int, fps: float = 15.0, crf: int = H264_CRF) -> None:
         self.width = width - (width % 2)
         self.height = height - (height % 2)
         self.final_path = path
         self.part_path = path.with_suffix(".part.mp4")
-        # 分片 MP4：录制过程中就有 moov，浏览器/ffprobe 可读
+        self.preview_path = Path(str(path).replace(".mp4", ".preview.mp4"))
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
             "-f", "rawvideo", "-pix_fmt", "bgr24",
@@ -61,11 +103,13 @@ class FFmpegH264Writer:
             self.proc.kill()
             self.proc.wait()
 
+        self.preview_path.unlink(missing_ok=True)
+        self.preview_path.with_suffix(".tmp.mp4").unlink(missing_ok=True)
+
         if not self.part_path.exists() or self.part_path.stat().st_size <= 0:
             LOG.warning("录像临时文件无效: %s", self.part_path)
             return None
 
-        # 封装成标准 MP4（moov 在文件头），方便网页预览与拖动进度条
         try:
             cmd = [
                 "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
@@ -80,7 +124,6 @@ class FFmpegH264Writer:
             return self.final_path
         except Exception as e:
             LOG.warning("封装失败，保留分片文件供预览: %s", e)
-            # 回退：把 part 改名为最终文件（分片格式，多数浏览器仍可播）
             try:
                 if self.final_path.exists():
                     self.final_path.unlink()
@@ -89,6 +132,24 @@ class FFmpegH264Writer:
             except Exception as e2:
                 LOG.error("保留录像失败: %s", e2)
                 return None
+
+    def abort(self) -> None:
+        """强制结束并删除临时/目标/预览文件，不做封装。"""
+        try:
+            if self.proc.stdin is not None:
+                self.proc.stdin.close()
+        except Exception:
+            pass
+        try:
+            self.proc.kill()
+            self.proc.wait(timeout=5)
+        except Exception:
+            pass
+        for p in (self.part_path, self.final_path, self.preview_path, self.preview_path.with_suffix(".tmp.mp4")):
+            try:
+                p.unlink(missing_ok=True)
+            except Exception as e:
+                LOG.warning("删除录像文件失败 %s: %s", p, e)
 
 
 class RecorderSink:
@@ -101,8 +162,12 @@ class RecorderSink:
         self._osd = True
         self._fps = 15.0
         self._auto = False
-        self._hold_off = False  # 手动停止后暂不自动续录
-        self._segment_key: str | None = None  # YYYYMMDD_HH 按小时切片
+        self._hold_off = False
+        self._segment_key: str | None = None
+        self._preview_lock = threading.Lock()
+        self._last_preview: dict | None = None
+        self._preview_thread: threading.Thread | None = None
+        self._preview_stop = threading.Event()
 
     def set_osd(self, enabled: bool) -> None:
         with self._lock:
@@ -120,18 +185,29 @@ class RecorderSink:
 
     def start(self) -> None:
         self.hub.subscribe("recorder", self._on_frame)
+        self._preview_stop.clear()
+        self._preview_thread = threading.Thread(
+            target=self._preview_loop, name="record-preview", daemon=True
+        )
+        self._preview_thread.start()
 
     def stop(self) -> None:
+        self._preview_stop.set()
         self.hub.unsubscribe("recorder")
         self.stop_recording()
 
     def info(self) -> dict:
         with self._lock:
+            preview = None
+            if self._writer is not None:
+                preview = self._writer.preview_path.name
             return {
                 "recording": self._recording,
                 "file": self._path.name if self._path else None,
+                "preview_file": preview,
                 "auto": self._auto,
                 "hold_off": self._hold_off,
+                "last_preview": self._last_preview,
             }
 
     def start_recording(self) -> Path:
@@ -144,15 +220,91 @@ class RecorderSink:
             self._hold_off = False
             return self._open_writer_locked(frame)
 
-    def stop_recording(self) -> Path | None:
+    def stop_recording(self, *, pause_auto: bool = True) -> Path | None:
         with self._lock:
-            # 手动停止时，即使开了自动录制也不立刻续开
             if self._auto:
+                self._hold_off = bool(pause_auto)
+            path = self._close_writer_locked()
+            auto = self._auto
+            hold = self._hold_off
+        if path is not None and auto and not hold:
+            try:
+                self.ensure_auto_recording()
+            except Exception as e:
+                LOG.warning("停止后续录失败: %s", e)
+        return path
+
+    def matches_active(self, name: str) -> bool:
+        with self._lock:
+            if not self._recording or self._path is None:
+                return False
+            base = self._path.name
+            preview = self._path.name.replace(".mp4", ".preview.mp4")
+            return name in (base, self._path.with_suffix(".part.mp4").name, preview)
+
+    def make_live_preview(self, force: bool = True) -> dict:
+        """生成/刷新延迟预览文件，可拖到已录制的时间点。"""
+        with self._lock:
+            if not self._recording or self._writer is None:
+                raise RuntimeError("当前没有在录制")
+            part = self._writer.part_path
+            preview = self._writer.preview_path
+            name = self._path.name if self._path else None
+
+        with self._preview_lock:
+            # 若刚生成过且未强制，直接返回缓存（减轻 CPU）
+            if (
+                not force
+                and self._last_preview
+                and self._last_preview.get("source") == name
+                and preview.exists()
+                and time.time() - float(self._last_preview.get("ts", 0)) < 3.0
+            ):
+                return dict(self._last_preview)
+
+            info = remux_preview(part, preview)
+            info["source"] = name
+            info["ts"] = time.time()
+            info["recording"] = True
+            self._last_preview = info
+            return dict(info)
+
+    def abort_recording(self, *, resume_auto: bool = True) -> dict:
+        with self._lock:
+            if not self._recording:
+                return {"aborted": False, "restarted": False}
+            path = self._path
+            writer = self._writer
+            auto = self._auto
+            self._writer = None
+            self._recording = False
+            self._path = None
+            self._segment_key = None
+            self._last_preview = None
+            if resume_auto and auto:
+                self._hold_off = False
+            else:
                 self._hold_off = True
-            return self._close_writer_locked()
+
+        if writer is not None:
+            writer.abort()
+        LOG.info("已丢弃录像: %s", path)
+
+        restarted = False
+        if resume_auto and auto:
+            try:
+                self.ensure_auto_recording()
+                restarted = self.info().get("recording", False)
+            except Exception as e:
+                LOG.warning("删除后重新自动录制失败: %s", e)
+        return {
+            "aborted": True,
+            "file": path.name if path else None,
+            "restarted": restarted,
+            "new_file": self.info().get("file"),
+        }
 
     def ensure_auto_recording(self) -> None:
-        """启动后若开启自动录制且当前未录，则开始。"""
         frame, _ = self.hub.get_latest()
         if frame is None:
             return
@@ -171,6 +323,7 @@ class RecorderSink:
         self._path = path
         self._recording = True
         self._segment_key = now.strftime("%Y%m%d_%H")
+        self._last_preview = None
         LOG.info("开始录制: %s (临时 %s)", path, self._writer.part_path)
         return path
 
@@ -183,11 +336,24 @@ class RecorderSink:
         self._recording = False
         self._path = None
         self._segment_key = None
+        self._last_preview = None
         final = None
         if writer is not None:
             final = writer.release()
         LOG.info("停止录制: %s", final or path)
         return final or path
+
+    def _preview_loop(self) -> None:
+        """后台每几秒刷新一次延迟预览，打开日历即可拖看已录部分。"""
+        while not self._preview_stop.wait(6.0):
+            try:
+                with self._lock:
+                    active = self._recording and self._writer is not None
+                if not active:
+                    continue
+                self.make_live_preview(force=True)
+            except Exception as e:
+                LOG.debug("延迟预览刷新跳过: %s", e)
 
     def _on_frame(self, frame: np.ndarray, _meta: dict) -> None:
         with self._lock:
@@ -201,7 +367,6 @@ class RecorderSink:
         now = datetime.now()
         key = now.strftime("%Y%m%d_%H")
 
-        # 自动录制：未录且未手动暂停则开；跨小时切片
         if auto and not hold_off and not recording:
             with self._lock:
                 if self._auto and not self._hold_off and not self._recording:

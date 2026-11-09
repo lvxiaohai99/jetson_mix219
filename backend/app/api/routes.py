@@ -148,15 +148,43 @@ def record_start():
 @api_bp.post("/record/stop")
 def record_stop():
     rt = _rt()
-    path = rt.recorder.stop_recording()
+    body = request.get_json(silent=True) or {}
+    # resume_auto=true：封装当前段后按自动录制设置立刻续录（用于「停止并预览」）
+    resume_auto = bool(body.get("resume_auto", False))
+    path = rt.recorder.stop_recording(pause_auto=not resume_auto)
     if path is None:
         return jsonify({"error": "当前没有在录制"}), 400
-    return jsonify({"ok": True, "file": path.name})
+    info = rt.recorder.info()
+    return jsonify(
+        {
+            "ok": True,
+            "file": path.name,
+            "recording": info.get("recording"),
+            "new_file": info.get("file"),
+        }
+    )
 
 
 @api_bp.get("/record/status")
 def record_status():
     return jsonify(_rt().recorder.info())
+
+
+@api_bp.post("/record/live-preview")
+@api_bp.get("/record/live-preview")
+def record_live_preview():
+    """边录边播：把当前已录内容封装成可拖动的预览（有几秒延迟）。"""
+    rt = _rt()
+    body = request.get_json(silent=True) or {}
+    force = bool(body.get("force", True)) if request.method == "POST" else True
+    try:
+        info = rt.recorder.make_live_preview(force=force)
+    except RuntimeError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        LOG.warning("live-preview 失败: %s", e)
+        return jsonify({"error": f"生成预览失败: {e}"}), 500
+    return jsonify({"ok": True, **info})
 
 
 @api_bp.get("/calendar")
@@ -178,6 +206,50 @@ def calendar_day():
         return jsonify({"error": "日期格式应为 YYYY-MM-DD"}), 400
     active = _rt().recorder.info().get("file")
     return jsonify(media_index.day_items(date_str, active_recording=active))
+
+
+@api_bp.post("/media/delete")
+def media_delete():
+    """删除截图/录像。
+
+    若目标是正在录制的文件：先丢弃当前录制，再删除；
+    若开启了自动录制，会立刻重新开始录一段。
+    """
+    body = request.get_json(silent=True) or {}
+    name = str(body.get("name") or "").strip()
+    if not name:
+        return jsonify({"error": "缺少文件名"}), 400
+
+    rt = _rt()
+    aborted = None
+    if rt.recorder.matches_active(name):
+        # 录制中：先停并丢弃，再清文件，然后按设置续录
+        aborted = rt.recorder.abort_recording(resume_auto=True)
+        # abort 已删 part/final；再保险清理一次
+        try:
+            media_index.delete_media_file(name)
+        except FileNotFoundError:
+            pass
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+        return jsonify(
+            {
+                "ok": True,
+                "name": name,
+                "was_recording": True,
+                "aborted": aborted,
+                "message": "已停止并删除当前录像"
+                + ("，已重新开始录制" if aborted and aborted.get("restarted") else ""),
+            }
+        )
+
+    try:
+        result = media_index.delete_media_file(name)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except FileNotFoundError:
+        return jsonify({"error": "文件不存在"}), 404
+    return jsonify({"ok": True, "was_recording": False, **result})
 
 
 @api_bp.get("/storage")
