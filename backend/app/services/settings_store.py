@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Any
 
-from backend.app.config import DEFAULT_SETTINGS, PREVIEW_MODES, SETTINGS_PATH
+from backend.app.config import ALGO_OBJECT_MODELS, DEFAULT_SETTINGS, PREVIEW_MODES, SETTINGS_PATH
 
 LOG = logging.getLogger("webcam.settings")
 
@@ -23,6 +23,16 @@ def _normalize(data: dict[str, Any]) -> dict[str, Any]:
     out["preview_fps"] = int(max(5, min(30, int(out.get("preview_fps", 15)))))
     out["auto_record"] = bool(out.get("auto_record", False))
     out["retention_days"] = int(max(1, min(365, int(out.get("retention_days", 7)))))
+    # 算法模式：优先 algo_mode；兼容旧 face_detect
+    mode = str(out.get("algo_mode") or "").lower()
+    if mode not in ("off", "face", "object"):
+        mode = "face" if bool(out.get("face_detect", False)) else "off"
+    out["algo_mode"] = mode
+    out["face_detect"] = mode == "face"
+    model = str(out.get("algo_model") or "auto").lower()
+    if model not in ALGO_OBJECT_MODELS:
+        model = "auto"
+    out["algo_model"] = model
     return out
 
 
@@ -49,9 +59,15 @@ def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
         "preview_fps",
         "auto_record",
         "retention_days",
+        "face_detect",
+        "algo_mode",
+        "algo_model",
     ):
         if key in patch:
             data[key] = patch[key]
+    # 若只改了 face_detect，同步 algo_mode
+    if "algo_mode" not in patch and "face_detect" in patch:
+        data["algo_mode"] = "face" if patch.get("face_detect") else "off"
     data = _normalize(data)
     SETTINGS_PATH.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return data

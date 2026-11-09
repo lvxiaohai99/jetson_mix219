@@ -21,7 +21,7 @@
           <button type="button" id="btn-next">›</button>
           <button type="button" id="btn-today">今天</button>
           <span class="hint-q" tabindex="0" aria-label="日历说明">?
-            <span class="hint-tip">绿点＝当天有截图/录像<br>灰点＝没有<br>点日期可查看文件</span>
+            <span class="hint-tip">绿框＝当天有截图/录像<br>灰框＝没有<br>点日期可查看文件</span>
           </span>
         </div>
         <div class="cal-grid cal-head">
@@ -94,6 +94,24 @@
             </div>
           </div>
           <p id="storage-hint" class="storage-hint empty">预计占用：--</p>
+
+          <div class="ctrl-row">
+            <div class="field">
+              <label for="algo-mode">算法验证</label>
+              <select id="algo-mode">
+                <option value="off">关闭</option>
+                <option value="face">人脸检测</option>
+                <option value="object">物体识别</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="algo-model">识别模型</label>
+              <select id="algo-model" disabled>
+                <option value="auto">自动（优先 YOLO）</option>
+              </select>
+            </div>
+            <span id="face-status" class="empty">未开启</span>
+          </div>
         </div>
         <div class="status" id="status">就绪</div>
       </section>

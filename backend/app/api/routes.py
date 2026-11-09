@@ -45,6 +45,12 @@ def apply_settings_to_runtime(data: dict, runtime=None) -> None:
                 rt.recorder.ensure_auto_recording()
             except Exception as e:
                 LOG.warning("自动录制启动失败: %s", e)
+    if "algo_model" in data:
+        rt.algorithm.set_object_model(str(data.get("algo_model") or "auto"))
+    if "algo_mode" in data:
+        rt.algorithm.set_mode(str(data.get("algo_mode") or "off"))
+    elif "face_detect" in data:
+        rt.algorithm.set_enabled(bool(data["face_detect"]))
 
 
 @api_bp.get("/health")
@@ -54,6 +60,7 @@ def health():
     ready = rt.hub.has_frame()
     rec = rt.recorder.info()
     effects = rt.source.get_effects()
+    algo = rt.algorithm.status()
     return jsonify(
         {
             "ok": ready,
@@ -65,16 +72,63 @@ def health():
             "de_red": effects["de_red"],
             "osd": settings.get("osd"),
             "retention_days": settings.get("retention_days"),
+            "algo_mode": algo.get("mode"),
+            "algo_model": algo.get("algo_model"),
+            "face_detect": algo.get("face_detect"),
+            "faces": algo.get("face_count"),
+            "objects": algo.get("object_count"),
             "mjpeg": rt.preview_mjpeg.stats(),
             "h264": rt.preview_h264.stats(),
         }
     ), (200 if ready else 503)
 
 
+@api_bp.get("/algo/status")
+def algo_status():
+    return jsonify(_rt().algorithm.status())
+
+
+@api_bp.post("/algo/face-detect")
+def algo_face_detect():
+    """兼容旧接口。"""
+    body = request.get_json(silent=True) or {}
+    if "enabled" not in body:
+        return jsonify({"error": "缺少 enabled"}), 400
+    enabled = bool(body.get("enabled"))
+    saved = save_settings({"algo_mode": "face" if enabled else "off", "face_detect": enabled})
+    apply_settings_to_runtime(saved)
+    return jsonify({"ok": True, "face_detect": enabled, **_rt().algorithm.status()})
+
+
+@api_bp.post("/algo/mode")
+def algo_mode():
+    body = request.get_json(silent=True) or {}
+    mode = str(body.get("mode") or "off").lower()
+    if mode not in ("off", "face", "object"):
+        return jsonify({"error": "mode 应为 off|face|object"}), 400
+    saved = save_settings({"algo_mode": mode, "face_detect": mode == "face"})
+    apply_settings_to_runtime(saved)
+    return jsonify({"ok": True, **_rt().algorithm.status()})
+
+
+@api_bp.post("/algo/model")
+def algo_model():
+    from backend.app.config import ALGO_OBJECT_MODELS
+
+    body = request.get_json(silent=True) or {}
+    model = str(body.get("model") or "auto").lower()
+    if model not in ALGO_OBJECT_MODELS:
+        return jsonify({"error": f"model 应为 {'|'.join(ALGO_OBJECT_MODELS)}"}), 400
+    saved = save_settings({"algo_model": model})
+    apply_settings_to_runtime(saved)
+    return jsonify({"ok": True, **_rt().algorithm.status()})
+
+
 @api_bp.get("/settings")
 def get_settings():
     data = load_settings()
     data["preview_modes"] = PREVIEW_MODES
+    data["algo_models"] = _rt().algorithm.available_models()
     data["storage"] = media_index.storage_estimate(
         int(data.get("retention_days", 7)),
         bool(data.get("auto_record", False)),

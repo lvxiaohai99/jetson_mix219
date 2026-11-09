@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable
 
 import cv2
 import numpy as np
@@ -11,6 +12,8 @@ from backend.app.config import JPEG_QUALITY
 from backend.app.stream.hub import FrameHub
 
 LOG = logging.getLogger("webcam.preview.mjpeg")
+
+OverlayFn = Callable[[np.ndarray], np.ndarray]
 
 
 class PreviewMjpegSink:
@@ -29,6 +32,10 @@ class PreviewMjpegSink:
         self._fps = 0.0
         self._frames = 0
         self._fps_t0 = time.time()
+        self._overlay_fn: OverlayFn | None = None
+
+    def set_overlay(self, fn: OverlayFn | None) -> None:
+        self._overlay_fn = fn
 
     @property
     def encoder(self) -> str:
@@ -41,6 +48,12 @@ class PreviewMjpegSink:
         self.hub.unsubscribe("preview_mjpeg")
 
     def _on_frame(self, frame: np.ndarray, _meta: dict) -> None:
+        fn = self._overlay_fn
+        if fn is not None:
+            try:
+                frame = fn(frame.copy())
+            except Exception:
+                pass
         ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), self.quality])
         if not ok:
             return

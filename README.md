@@ -2,43 +2,63 @@
 
 Jetson Orin Nano 排线摄像头（IMX219）学习项目。
 
-当前为 **前后端分离** 架构：后端只做视频源与 API，前端负责预览/控制/回放/日历。
+**前后端分离**：后端只做视频源与 API，前端负责预览 / 控制 / 日历。
 
-详细设计见：[doc/架构设计.md](doc/架构设计.md)
+## 文档
+
+| 文档 | 内容 |
+|------|------|
+| [doc/架构设计.md](doc/架构设计.md) | 整体架构、目录、API、启动注意 |
+| [doc/算法与模型.md](doc/算法与模型.md) | **算法原理 + 模型下载/部署/切换**（重点） |
 
 ## 功能
 
 - 唯一视频源（Argus）+ FrameHub 分发
-- 预览编码可切换：
-  - `mjpeg_hw`：MJPEG（优先硬件 JPEG 思路，当前稳定回退 OpenCV JPEG）
-  - `h264_soft`：软件 H.264（WebSocket + mpegts.js）
-- **预览帧数可配置**（5~30 fps，写入 `settings.json`）
-- 旋转 / 缩放 / 锁定设置 / 去红边 / 时间 OSD
-- 截图、H.264 MP4 录制、回放时间轴
-- **媒体日历**：预览页左侧常驻；有文件绿点、无文件灰点（日历旁「？」可查看说明）；可删除截图/录像（录制中删除会先停录并按设置重开）
-- **默认自动录制**（可开关）、**滚存天数**（过期自动删）、**预计占用空间**
-- 预览模式 10 秒 CPU 实测，可设为默认
-- 算法接入桩 `AlgoSink`（默认不处理）
+- 预览：`mjpeg_hw` / `h264_soft`，帧率 5~30 可配
+- 旋转 / 缩放 / 锁定设置 / 去红边 / 时间显示
+- 截图、H.264 MP4 录制（软件编码；Orin Nano **无** H.264 硬编）
+- 左侧媒体日历：绿框有文件、灰框无文件；可删媒体
+- 自动录制、滚存天数、预计占用
+- 算法验证（AlgoSink）：人脸 / 物体识别，预览画框，**不另开摄像头**
 
 ## 快速开始
 
 ```bash
 cd /home/lht/sync/v2l4_learn
 pip3 install -r requirements.txt
+# 若 pip 装上了 opencv-python，务必卸掉，否则 CSI 摄像头会坏：
+# pip3 uninstall -y opencv-python opencv-python-headless
 ./start.sh
 ```
 
-- 预览（左侧含日历）：`http://<IP>:8080`
-- 回放页暂不可用（后续修复）
+`./start.sh` 会先停掉旧服务并释放 **8080** 与摄像头，再启动。
+
+浏览器打开：`http://<IP>:8080`
+
+### 物体识别怎么开
+
+1. 按 [doc/算法与模型.md](doc/算法与模型.md) 把权重放到 `models/`（至少 `yolov8n.pt`）  
+2. 网页「算法验证」选 **物体识别**，「识别模型」选 **YOLOv8n** 或自动  
+3. 无人时也可验证：`python3 scripts/verify_algo.py`
+
+常用下载（放到 `models/`）：
+
+| 文件 | 地址 |
+|------|------|
+| `yolov8n.pt` | https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.pt |
+| `fasterrcnn_mobilenet_v3_large_320_fpn.pth` | https://download.pytorch.org/models/fasterrcnn_mobilenet_v3_large_320_fpn-907ea3f9.pth |
+| `ssdlite320_mobilenet_v3_large_coco.pth` | https://download.pytorch.org/models/ssdlite320_mobilenet_v3_large_coco-a79551df.pth |
 
 ## 目录
 
 ```text
 backend/app/     # API、视频源、Hub、Sink、媒体索引
 frontend/        # 静态页面与 JS/CSS
-doc/架构设计.md   # 架构说明
-start.sh         # 启动：python3 -m backend.app.main
-settings.json    # 旋转/帧率/自动录制/滚存等持久设置
+models/          # 算法权重（需自行下载）
+doc/             # 架构 + 算法模型说明
+scripts/         # 验证脚本
+start.sh         # 推荐启动方式
+settings.json    # 本地持久设置
 ```
 
 ## 常用设置（预览页）
@@ -46,31 +66,20 @@ settings.json    # 旋转/帧率/自动录制/滚存等持久设置
 | 项 | 说明 |
 |---|---|
 | 预览帧数 | 5~30，改后摄像头会短暂重开 |
-| 默认自动录制 | 启动后自动开始；手动点「停止」会暂停续录，再点「开始」或重新勾选可恢复 |
-| 滚存天数 | 1~30 天，过期截图/录像自动删除 |
-| 预计占用 | 按约 8MB/分钟估算滚存上限 |
+| 默认自动录制 | 开着时 ffmpeg 会持续占 CPU（软件 H.264） |
+| 滚存天数 | 过期截图/录像自动删 |
+| 算法验证 | 关闭 / 人脸 / 物体 |
+| 识别模型 | 自动 / YOLOv8n / FasterRCNN / SSDLite |
 
-## 切换预览模式
+## 录制说明
 
-1. 页面「预览编码」下拉选择  
-2. 点「实测10秒CPU」对比占用  
-3. 点「设为默认」或「锁定当前设置」写入 `settings.json`
-
-## 录制占用
-
-H.264/MP4（CRF 23）大约 **5~12 MB/分钟**（估算默认按 8MB/分钟）。
-
-自动录制按小时切片文件，便于日历按天浏览。
-
-录制中写分片 `*.part.mp4`，并定期/按需生成延迟预览 `*.preview.mp4`（边录边播，可拖到几分钟前）。  
-停止后封装成标准 `*.mp4`。强杀导致损坏的文件可删除后重录。
-
-## 麦克风
-
-当前仍不录音频；架构上可在 Recorder 扩展音轨。
+- 约 **5~12 MB/分钟**（估算按 8MB/分钟）
+- 录制中：`*.part.mp4` + 延迟预览 `*.preview.mp4`；停止后成标准 `*.mp4`
+- 关掉物体识别 **不会** 停录像；要停请点「停止录制」或取消自动录制
 
 ## 已知注意
 
-- 改帧率会重开 Argus 管道，画面会闪一下
-- 自动录制开启时 CPU 会持续有编码开销
-- 滚存清理后台约每 10 分钟检查一次；改天数时会立刻清理一次
+- 改帧率会重开 Argus，画面闪一下
+- Orin Nano 不支持 H.264 硬编码，长时间录像 CPU 偏高属正常
+- 滚存约每 10 分钟清理；改天数会立刻清一次
+- 回放页暂不完善

@@ -1,4 +1,11 @@
 flask>=3.0
 flask-sock>=0.7
-opencv-python>=4.8
-numpy>=1.22
+# Jetson 用系统自带 opencv（带 GStreamer）；勿 pip 安装 opencv-python，否则摄像头会失效
+numpy>=1.22.4,<2
+# 物体识别（AlgoSink object 模式）
+torch>=2.0
+torchvision>=0.15
+Pillow>=9.0
+ultralytics>=8.0
+# 安装 ultralytics 后若被拉起 opencv-python，请卸载它以保住系统 OpenCV/GStreamer：
+#   pip3 uninstall -y opencv-python opencv-python-headless

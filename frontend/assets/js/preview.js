@@ -14,6 +14,9 @@
   const retention = document.getElementById('retention-days');
   const retentionVal = document.getElementById('retention-val');
   const storageHint = document.getElementById('storage-hint');
+  const algoMode = document.getElementById('algo-mode');
+  const algoModel = document.getElementById('algo-model');
+  const faceStatus = document.getElementById('face-status');
 
   let rotate = 0, scale = 1, deRedTimer = null, previewMode = 'mjpeg_hw';
   let fpsTimer = null, retentionTimer = null;
@@ -182,6 +185,66 @@
     }, 280);
   };
 
+  function fillAlgoModels(models, selected){
+    if (!algoModel) return;
+    const entries = Object.entries(models || {});
+    if (!entries.length) return;
+    algoModel.innerHTML = entries.map(([k,v]) => {
+      const ready = v.ready !== false;
+      const tip = ready ? (v.label || k) : `${v.label || k}（未下载）`;
+      return `<option value="${k}" ${ready ? '' : 'disabled'}>${tip}</option>`;
+    }).join('');
+    const want = selected || 'auto';
+    if ([...algoModel.options].some(o => o.value === want && !o.disabled)) algoModel.value = want;
+    else algoModel.value = 'auto';
+  }
+  function syncAlgoModelEnabled(){
+    if (!algoModel) return;
+    algoModel.disabled = !(algoMode && algoMode.value === 'object');
+  }
+  if (algoMode) {
+    algoMode.onchange = async ()=>{
+      try{
+        const mode = algoMode.value || 'off';
+        syncAlgoModelEnabled();
+        const data = await postJSON('/api/algo/mode', { mode });
+        const tip = mode === 'object' ? '已开启物体识别' : (mode === 'face' ? '已开启人脸检测' : '已关闭算法');
+        setStatus(tip + '（AlgoSink）');
+        updateFaceStatus(data);
+      }catch(e){ setStatus(String(e)); }
+    };
+  }
+  if (algoModel) {
+    algoModel.onchange = async ()=>{
+      try{
+        const model = algoModel.value || 'auto';
+        const data = await postJSON('/api/algo/model', { model });
+        setStatus('识别模型已切换：' + model);
+        updateFaceStatus(data);
+      }catch(e){ setStatus(String(e)); }
+    };
+  }
+  function updateFaceStatus(s){
+    if (!faceStatus) return;
+    if (!s || s.mode === 'off' || !s.enabled) { faceStatus.textContent = '未开启'; return; }
+    const ms = s.last_infer_ms ?? '-';
+    if (s.mode === 'object') {
+      const m = s.model_loaded || s.model || '-';
+      faceStatus.textContent = `${m} · 物体 ${s.object_count ?? s.det_count ?? 0} 个 · ${ms}ms`;
+      if (s.object_load_error) faceStatus.textContent = '模型加载失败';
+    } else {
+      faceStatus.textContent = `人脸 ${s.face_count ?? 0} 张 · 推理 ${ms}ms`;
+    }
+  }
+  async function pollAlgo(){
+    if (!algoMode || algoMode.value === 'off') return;
+    try{
+      const res = await fetch('/api/algo/status');
+      const data = await res.json();
+      updateFaceStatus(data);
+    }catch(_){}
+  }
+
   document.getElementById('btn-shot').onclick = async ()=>{
     try{
       setStatus('正在截图...');
@@ -248,12 +311,17 @@
       fpsInput.value = String(s.preview_fps ?? 15); fpsVal.textContent = fpsInput.value;
       autoRecord.checked = !!s.auto_record;
       retention.value = String(s.retention_days ?? 7); retentionVal.textContent = retention.value;
+      if (algoMode) algoMode.value = s.algo_mode || (s.face_detect ? 'face' : 'off');
+      fillAlgoModels(s.algo_models, s.algo_model || 'auto');
+      syncAlgoModelEnabled();
       showStorage(s.storage);
       const modes = s.preview_modes || {};
       modeSel.innerHTML = Object.entries(modes).map(([k,v]) =>
         `<option value="${k}">${v.label || k}</option>`
       ).join('');
       await applyPreviewMode(s.preview_mode || 'mjpeg_hw', false);
+      if (algoMode && algoMode.value !== 'off') pollAlgo();
+      else updateFaceStatus({ mode: 'off', enabled: false });
     }catch(_){ startMjpeg(); applyTransform(); }
     await syncRecordButtons();
   }
@@ -261,6 +329,7 @@
   tickOsd(); setInterval(tickOsd, 1000); applyOsdVisible();
   syncState();
   setInterval(syncRecordButtons, 5000);
+  setInterval(pollAlgo, 1000);
   // 日历绿点轻量刷新；正在看视频/全屏时不会拆掉播放器
   setInterval(() => {
     if (window.MediaCalendar && typeof window.MediaCalendar.softRefresh === 'function') {

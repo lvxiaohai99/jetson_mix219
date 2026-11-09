@@ -9,3 +9,10 @@ __pycache__/
 *.jpg
 settings.json
 !requirements.txt
+models/*.pth
+models/*.pt
+models/*.onnx
+models/*.caffemodel
+!models/.gitkeep
+testdata/*
+!testdata/.gitkeep

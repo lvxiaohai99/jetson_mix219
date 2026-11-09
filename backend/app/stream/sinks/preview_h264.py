@@ -30,6 +30,10 @@ class PreviewH264Sink:
         self._fps = 0.0
         self._frames = 0
         self._fps_t0 = time.time()
+        self._overlay_fn: Callable[[np.ndarray], np.ndarray] | None = None
+
+    def set_overlay(self, fn: Callable[[np.ndarray], np.ndarray] | None) -> None:
+        self._overlay_fn = fn
 
     def set_fps(self, fps: float) -> None:
         new_fps = float(max(5.0, min(30.0, fps)))
@@ -73,6 +77,12 @@ class PreviewH264Sink:
             if not self._active or not self._clients:
                 return
             clients = list(self._clients)
+        fn = self._overlay_fn
+        if fn is not None:
+            try:
+                frame = fn(frame.copy())
+            except Exception:
+                pass
         h, w = frame.shape[:2]
         w -= w % 2
         h -= h % 2

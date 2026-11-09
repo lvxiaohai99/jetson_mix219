@@ -74,12 +74,16 @@ def main() -> None:
     app = create_app()
     rt = app.config["RUNTIME"]
     settings = load_settings()
+    # 预览叠加算法结果（人脸框），录像仍用干净帧
+    rt.preview_mjpeg.set_overlay(rt.algorithm.annotate)
+    rt.preview_h264.set_overlay(rt.algorithm.annotate)
     apply_settings_to_runtime(settings, runtime=rt)
 
+    # 算法先订阅，同帧内先检测再预览画框
+    rt.algorithm.start()
     rt.preview_mjpeg.start()
     rt.preview_h264.start()
     rt.recorder.start()
-    rt.algorithm.start()
     rt.source.start()
 
     for _ in range(50):

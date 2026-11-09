@@ -57,7 +57,6 @@
       cells.push(`
         <button type="button" class="${cls}" data-date="${d.date}" title="${tip}">
           <span class="cal-day">${d.day}</span>
-          <span class="cal-dot ${d.has_media ? 'green' : 'gray'}"></span>
         </button>`);
     }
     bodyEl.innerHTML = cells.join('');

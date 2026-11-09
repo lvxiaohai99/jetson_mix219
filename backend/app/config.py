@@ -25,11 +25,34 @@ DEFAULT_SETTINGS = {
     "preview_fps": 15,           # 5~30
     "auto_record": False,        # 启动后自动录制
     "retention_days": 7,         # 滚存天数
+    "face_detect": False,        # 兼容旧字段
+    "algo_mode": "off",          # off | face | object
+    "algo_model": "auto",        # auto | yolov8n | fasterrcnn | ssdlite
 }
 
 PREVIEW_MODES = {
     "mjpeg_hw": {"label": "MJPEG（优先硬件JPEG）", "player": "mjpeg"},
     "h264_soft": {"label": "H.264 软件（低带宽）", "player": "h264"},
+}
+
+# 物体识别可选模型（文件放在 models/）
+ALGO_OBJECT_MODELS = {
+    "auto": {
+        "label": "自动（优先 YOLO）",
+        "file": None,
+    },
+    "yolov8n": {
+        "label": "YOLOv8n（推荐）",
+        "file": "yolov8n.pt",
+    },
+    "fasterrcnn": {
+        "label": "FasterRCNN",
+        "file": "fasterrcnn_mobilenet_v3_large_320_fpn.pth",
+    },
+    "ssdlite": {
+        "label": "SSDLite（轻量备用）",
+        "file": "ssdlite320_mobilenet_v3_large_coco.pth",
+    },
 }
 
 
