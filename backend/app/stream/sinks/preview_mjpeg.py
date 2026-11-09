@@ -33,9 +33,18 @@ class PreviewMjpegSink:
         self._frames = 0
         self._fps_t0 = time.time()
         self._overlay_fn: OverlayFn | None = None
+        self._enabled = True
 
     def set_overlay(self, fn: OverlayFn | None) -> None:
         self._overlay_fn = fn
+
+    def set_enabled(self, enabled: bool) -> None:
+        """关闭后不再 JPEG 编码，显著降低预览 CPU。"""
+        with self._lock:
+            self._enabled = bool(enabled)
+            if not self._enabled:
+                self._jpeg = None
+                self._fps = 0.0
 
     @property
     def encoder(self) -> str:
@@ -48,6 +57,9 @@ class PreviewMjpegSink:
         self.hub.unsubscribe("preview_mjpeg")
 
     def _on_frame(self, frame: np.ndarray, _meta: dict) -> None:
+        with self._lock:
+            if not self._enabled:
+                return
         fn = self._overlay_fn
         if fn is not None:
             try:
@@ -72,7 +84,12 @@ class PreviewMjpegSink:
 
     def stats(self) -> dict:
         with self._lock:
-            return {"encoder": self._encoder, "fps": round(self._fps, 1), "ready": self._jpeg is not None}
+            return {
+                "encoder": self._encoder,
+                "fps": round(self._fps, 1),
+                "ready": self._jpeg is not None,
+                "enabled": self._enabled,
+            }
 
 
 def mjpeg_generator(sink: PreviewMjpegSink):

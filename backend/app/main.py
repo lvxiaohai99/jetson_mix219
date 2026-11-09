@@ -79,11 +79,11 @@ def main() -> None:
     rt.preview_h264.set_overlay(rt.algorithm.annotate)
     apply_settings_to_runtime(settings, runtime=rt)
 
-    # 算法先订阅，同帧内先检测再预览画框
-    rt.algorithm.start()
+    # 预览/录像先订阅；算法异步推理，避免 YOLO 堵死 Hub 导致预览黑屏
     rt.preview_mjpeg.start()
     rt.preview_h264.start()
     rt.recorder.start()
+    rt.algorithm.start()
     rt.source.start()
 
     for _ in range(50):

@@ -17,8 +17,12 @@
   const algoMode = document.getElementById('algo-mode');
   const algoModel = document.getElementById('algo-model');
   const faceStatus = document.getElementById('face-status');
+  const btnPreviewToggle = document.getElementById('btn-preview-toggle');
+  const stageEl = document.getElementById('stage');
+  const previewOffEl = document.getElementById('preview-off');
 
   let rotate = 0, scale = 1, deRedTimer = null, previewMode = 'mjpeg_hw';
+  let previewEnabled = true;
   let fpsTimer = null, retentionTimer = null;
   let mpegtsPlayer = null;
 
@@ -62,7 +66,24 @@
     }
   }
 
+  function syncPreviewToggleUi(){
+    if (btnPreviewToggle) {
+      btnPreviewToggle.textContent = previewEnabled ? '关闭预览' : '开启预览';
+      btnPreviewToggle.classList.toggle('is-active', !previewEnabled);
+    }
+    if (stageEl) stageEl.classList.toggle('preview-disabled', !previewEnabled);
+    if (previewOffEl) previewOffEl.classList.toggle('hide', previewEnabled);
+  }
+
+  function stopPreviewStream(){
+    stopH264();
+    try { view.removeAttribute('src'); view.src = ''; } catch (_) {}
+    view.classList.add('hide');
+    viewVideo.classList.add('hide');
+  }
+
   function startMjpeg(){
+    if (!previewEnabled) { stopPreviewStream(); return; }
     stopH264();
     view.classList.remove('hide');
     viewVideo.classList.add('hide');
@@ -70,6 +91,7 @@
   }
 
   function startH264(){
+    if (!previewEnabled) { stopPreviewStream(); return; }
     stopH264();
     view.classList.add('hide');
     viewVideo.classList.remove('hide');
@@ -85,19 +107,69 @@
     mpegtsPlayer.play().catch(()=>{});
   }
 
+  async function setPreviewEnabled(enabled, persist=true){
+    previewEnabled = !!enabled;
+    syncPreviewToggleUi();
+    if (!previewEnabled && algoMode) {
+      algoMode.value = 'off';
+      updateFaceStatus({ mode: 'off', enabled: false });
+    }
+    syncAlgoModelEnabled();
+    if (persist) {
+      try {
+        // 关预览时后端会同步把 algo_mode 置 off
+        await postJSON('/api/settings', { preview_enabled: previewEnabled });
+      } catch (e) { setStatus(String(e)); }
+    }
+    if (previewEnabled) {
+      if (previewMode === 'h264_soft') startH264();
+      else startMjpeg();
+      applyTransform();
+      setStatus('预览已开启');
+    } else {
+      stopPreviewStream();
+      setStatus('预览已关闭（算法已关；未录像时摄像头暂停）');
+    }
+  }
+
   async function applyPreviewMode(mode, persist=true){
     previewMode = mode;
     modeSel.value = mode;
     if (persist) {
       await postJSON('/api/settings', { preview_mode: mode });
     }
+    if (!previewEnabled) {
+      stopPreviewStream();
+      syncPreviewToggleUi();
+      return;
+    }
     if (mode === 'h264_soft') startH264();
     else startMjpeg();
     applyTransform();
   }
 
+  function syncDeredButtons(value){
+    const v = Number(value);
+    // 0=关闭；1~69≈适中；70~100≈强力（拖动滑条时也能看出档位）
+    let key = 'off';
+    if (v <= 0) key = 'off';
+    else if (v >= 70) key = 'strong';
+    else key = 'mid';
+    const map = {
+      off: document.getElementById('btn-dered-off'),
+      mid: document.getElementById('btn-dered-mid'),
+      strong: document.getElementById('btn-dered-strong'),
+    };
+    Object.entries(map).forEach(([k, btn]) => {
+      if (!btn) return;
+      btn.classList.toggle('is-active', k === key);
+      btn.setAttribute('aria-pressed', k === key ? 'true' : 'false');
+    });
+  }
+
   async function setDeRed(value, immediate=false){
     deRed.value = String(value); deRedVal.textContent = String(value);
+    syncDeredButtons(value);
     const send = async ()=>{
       try { await postJSON('/api/settings', { de_red: Number(value) }); setStatus('去红边：'+value); }
       catch(e){ setStatus(String(e)); }
@@ -158,6 +230,9 @@
     try { await postJSON('/api/settings', { osd: !!osdBox.checked }); }
     catch(e){ setStatus(String(e)); }
   };
+  if (btnPreviewToggle) {
+    btnPreviewToggle.onclick = () => setPreviewEnabled(!previewEnabled, true);
+  }
   modeSel.onchange = ()=>applyPreviewMode(modeSel.value, true);
   fpsInput.oninput = ()=>{
     fpsVal.textContent = fpsInput.value;
@@ -199,18 +274,30 @@
     else algoModel.value = 'auto';
   }
   function syncAlgoModelEnabled(){
+    if (algoMode) algoMode.disabled = !previewEnabled;
     if (!algoModel) return;
-    algoModel.disabled = !(algoMode && algoMode.value === 'object');
+    algoModel.disabled = !(previewEnabled && algoMode && algoMode.value === 'object');
   }
   if (algoMode) {
     algoMode.onchange = async ()=>{
       try{
         const mode = algoMode.value || 'off';
+        // 开算法时若预览关着，先打开预览
+        if (mode !== 'off' && !previewEnabled) {
+          await setPreviewEnabled(true, true);
+        }
         syncAlgoModelEnabled();
         const data = await postJSON('/api/algo/mode', { mode });
+        if (data.preview_enabled) {
+          previewEnabled = true;
+          syncPreviewToggleUi();
+          if (previewMode === 'h264_soft') startH264();
+          else startMjpeg();
+        }
         const tip = mode === 'object' ? '已开启物体识别' : (mode === 'face' ? '已开启人脸检测' : '已关闭算法');
         setStatus(tip + '（AlgoSink）');
         updateFaceStatus(data);
+        syncAlgoModelEnabled();
       }catch(e){ setStatus(String(e)); }
     };
   }
@@ -307,6 +394,7 @@
       const res=await fetch('/api/settings'); const s=await res.json();
       rotate = Number(s.rotate||0); scale = Number(s.scale||1);
       deRed.value = String(s.de_red ?? 55); deRedVal.textContent = deRed.value;
+      syncDeredButtons(deRed.value);
       osdBox.checked = !!s.osd; applyOsdVisible();
       fpsInput.value = String(s.preview_fps ?? 15); fpsVal.textContent = fpsInput.value;
       autoRecord.checked = !!s.auto_record;
@@ -319,7 +407,10 @@
       modeSel.innerHTML = Object.entries(modes).map(([k,v]) =>
         `<option value="${k}">${v.label || k}</option>`
       ).join('');
+      previewEnabled = s.preview_enabled !== false;
+      syncPreviewToggleUi();
       await applyPreviewMode(s.preview_mode || 'mjpeg_hw', false);
+      if (!previewEnabled) stopPreviewStream();
       if (algoMode && algoMode.value !== 'off') pollAlgo();
       else updateFaceStatus({ mode: 'off', enabled: false });
     }catch(_){ startMjpeg(); applyTransform(); }

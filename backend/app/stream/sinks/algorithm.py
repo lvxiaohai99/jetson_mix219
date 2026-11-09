@@ -167,6 +167,12 @@ class AlgorithmSink:
         self._obj_model_pref = "auto"  # auto | yolov8n | fasterrcnn | ssdlite
         self._obj_load_gen = 0  # 切换模型时递增，丢弃过期加载结果
         self._obj_load_error: str | None = None
+        # 推理放到后台线程，避免堵死 Hub→预览（YOLO 单帧可到几百 ms）
+        self._pending: tuple[np.ndarray, dict, str, int] | None = None
+        self._wake = threading.Event()
+        self._worker_running = False
+        self._worker: threading.Thread | None = None
+        self._busy = False
         self._load_cascade()
 
     @staticmethod
@@ -309,11 +315,19 @@ class AlgorithmSink:
             return False
 
     def start(self) -> None:
+        self._worker_running = True
+        self._worker = threading.Thread(target=self._worker_loop, name="algo-infer", daemon=True)
+        self._worker.start()
         self.hub.subscribe("algorithm", self._on_frame)
-        LOG.info("AlgoSink 已挂载 mode=%s", self.mode)
+        LOG.info("AlgoSink 已挂载 mode=%s（异步推理）", self.mode)
 
     def stop(self) -> None:
         self.hub.unsubscribe("algorithm")
+        self._worker_running = False
+        self._wake.set()
+        if self._worker is not None:
+            self._worker.join(timeout=2.0)
+            self._worker = None
 
     def set_mode(self, mode: str) -> None:
         mode = str(mode or "off").lower()
@@ -379,23 +393,53 @@ class AlgorithmSink:
         return out
 
     def _on_frame(self, frame: np.ndarray, meta: dict) -> None:
+        """只投递最新帧，绝不在 Hub 回调里做重推理。"""
         with self._lock:
             self._frames += 1
             mode = self.mode
             frames = self._frames
+            busy = self._busy
+            face_n = self._face_every_n
+            obj_n = self._obj_every_n
         if mode == "off":
             return
-        if mode == "face":
-            self._infer_face(frame, meta, frames)
-        elif mode == "object":
-            self._infer_object(frame, meta, frames)
+        every_n = face_n if mode == "face" else obj_n
+        if frames % every_n != 1:
+            return
+        # 上一帧还在推，直接丢弃中间帧，保证预览流畅
+        if busy:
+            return
+        with self._lock:
+            self._pending = (frame.copy(), dict(meta or {}), mode, frames)
+        self._wake.set()
+
+    def _worker_loop(self) -> None:
+        while self._worker_running:
+            self._wake.wait(timeout=0.5)
+            self._wake.clear()
+            with self._lock:
+                job = self._pending
+                self._pending = None
+                if job is None:
+                    continue
+                self._busy = True
+            try:
+                frame, meta, mode, frames = job
+                if mode == "face":
+                    self._infer_face(frame, meta, frames)
+                elif mode == "object":
+                    self._infer_object(frame, meta, frames)
+            except Exception as e:
+                LOG.warning("算法推理线程异常: %s", e)
+            finally:
+                with self._lock:
+                    self._busy = False
 
     def _infer_face(self, frame: np.ndarray, meta: dict, frames: int) -> None:
         with self._lock:
             cascade = self._cascade
-            every_n = self._face_every_n
             scale = self._face_scale
-        if cascade is None or frames % every_n != 1:
+        if cascade is None:
             return
         t0 = time.time()
         h, w = frame.shape[:2]
@@ -417,10 +461,6 @@ class AlgorithmSink:
             LOG.info("人脸检测 faces=%s infer_ms=%.1f seq=%s", len(dets), ms, meta.get("seq"))
 
     def _infer_object(self, frame: np.ndarray, meta: dict, frames: int) -> None:
-        with self._lock:
-            every_n = self._obj_every_n
-        if frames % every_n != 1:
-            return
         if not self._ensure_object_model():
             return
 

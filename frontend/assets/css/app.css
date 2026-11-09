@@ -115,6 +115,20 @@ h1 { margin: 0; font-size: clamp(1.1rem, 2.5vw, 1.4rem); font-weight: 600; }
   transform-origin: center center; transition: transform .15s ease; background: #000;
 }
 #viewVideo.hide, #view.hide { display: none; }
+.preview-off {
+  position: absolute; inset: 0; z-index: 3;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  gap: .45rem; padding: 1rem;
+  background: #0b1220; color: #cbd5e1;
+  font-size: 1.05rem; font-weight: 600; text-align: center;
+  min-height: 220px;
+}
+.preview-off span { font-size: .85rem; font-weight: 400; color: #94a3b8; }
+.preview-off.hide { display: none; }
+.stage.preview-disabled #view,
+.stage.preview-disabled #viewVideo,
+.stage.preview-disabled #osd-clock { visibility: hidden; }
 #osd-clock {
   position: absolute; left: 12px; top: 10px; z-index: 2;
   margin: 0; padding: .15rem .45rem; border-radius: 6px;
@@ -186,6 +200,15 @@ button.primary:hover { background: #1d4ed8; }
 button.danger { background: #b91c1c; }
 button.danger:hover { background: #991b1b; }
 button:disabled { opacity: .5; cursor: not-allowed; }
+button.is-active {
+  background: #2563eb;
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, .55);
+  color: #fff;
+}
+button.is-active:hover { background: #1d4ed8; }
+.field-actions .seg-btn.is-active {
+  background: #2563eb;
+}
 .status {
   min-height: 1.4rem; color: #93c5fd; font-size: .9rem;
   margin: .4rem auto .8rem; text-align: center;

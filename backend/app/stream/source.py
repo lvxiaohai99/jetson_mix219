@@ -27,6 +27,9 @@ class CameraSource:
         self._reopen = False
         self._weight = None
         self._weight_shape = None
+        # 预览/录像/算法都关掉时暂停取流，进一步省 CPU
+        self._capture_wanted = True
+        self._force_until = 0.0
 
     def set_effects(
         self,
@@ -46,9 +49,33 @@ class CameraSource:
                     self._fps = new_fps
                     self._reopen = True
 
+    def set_capture_wanted(self, wanted: bool) -> None:
+        with self._lock:
+            wanted = bool(wanted)
+            if wanted == self._capture_wanted:
+                return
+            self._capture_wanted = wanted
+            if wanted:
+                self._reopen = True  # 尽快重新打开
+            LOG.info("摄像头采集: %s", "需要" if wanted else "暂停")
+
+    def request_brief_capture(self, seconds: float = 3.0) -> None:
+        """截图等短时需求：临时拉起采集。"""
+        with self._lock:
+            self._force_until = max(self._force_until, time.time() + float(seconds))
+            self._reopen = True
+
+    def _want_capture_locked(self) -> bool:
+        return self._capture_wanted or time.time() < self._force_until
+
     def get_effects(self) -> dict:
         with self._lock:
-            return {"rotate": self._rotate, "de_red": self._de_red, "fps": self._fps}
+            return {
+                "rotate": self._rotate,
+                "de_red": self._de_red,
+                "fps": self._fps,
+                "capture": self._want_capture_locked(),
+            }
 
     def start(self) -> None:
         if self._running:
@@ -72,8 +99,15 @@ class CameraSource:
     def _loop(self) -> None:
         while self._running:
             with self._lock:
-                fps = self._fps
-                self._reopen = False
+                if not self._want_capture_locked():
+                    pass_wait = True
+                else:
+                    pass_wait = False
+                    fps = self._fps
+                    self._reopen = False
+            if pass_wait:
+                time.sleep(0.25)
+                continue
             pipeline = build_gst_pipeline(fps)
             interval = 1.0 / fps
             cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
@@ -86,8 +120,11 @@ class CameraSource:
             try:
                 while self._running:
                     with self._lock:
+                        if not self._want_capture_locked():
+                            LOG.info("无预览/录像/算法需求，暂停摄像头")
+                            break
                         if self._reopen:
-                            LOG.info("帧率变更，重开摄像头")
+                            LOG.info("参数变更，重开摄像头")
                             break
                         strength = self._de_red / 100.0
                         rot = self._rotate

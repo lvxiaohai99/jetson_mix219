@@ -23,6 +23,7 @@ DEFAULT_SETTINGS = {
     "osd": True,
     "preview_mode": "mjpeg_hw",  # mjpeg_hw | h264_soft
     "preview_fps": 15,           # 5~30
+    "preview_enabled": True,     # 关闭预览可停 JPEG/软H264 编码省 CPU
     "auto_record": False,        # 启动后自动录制
     "retention_days": 7,         # 滚存天数
     "face_detect": False,        # 兼容旧字段

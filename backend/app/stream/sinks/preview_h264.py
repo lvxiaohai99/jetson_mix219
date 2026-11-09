@@ -31,9 +31,17 @@ class PreviewH264Sink:
         self._frames = 0
         self._fps_t0 = time.time()
         self._overlay_fn: Callable[[np.ndarray], np.ndarray] | None = None
+        self._enabled = True
 
     def set_overlay(self, fn: Callable[[np.ndarray], np.ndarray] | None) -> None:
         self._overlay_fn = fn
+
+    def set_enabled(self, enabled: bool) -> None:
+        """关闭预览时停止编码；无客户端时本来就不编。"""
+        with self._lock:
+            self._enabled = bool(enabled)
+        if not enabled:
+            self._stop_encoder()
 
     def set_fps(self, fps: float) -> None:
         new_fps = float(max(5.0, min(30.0, fps)))
@@ -70,11 +78,12 @@ class PreviewH264Sink:
                 "fps": round(self._fps, 1),
                 "clients": len(self._clients),
                 "ready": self._proc is not None,
+                "enabled": self._enabled,
             }
 
     def _on_frame(self, frame: np.ndarray, _meta: dict) -> None:
         with self._lock:
-            if not self._active or not self._clients:
+            if not self._enabled or not self._active or not self._clients:
                 return
             clients = list(self._clients)
         fn = self._overlay_fn

@@ -37,14 +37,16 @@
 
       <section class="home-main">
         <div class="stage-wrap">
-          <div class="stage">
+          <div class="stage" id="stage">
             <div id="osd-clock">--:--:--</div>
             <img id="view" src="/api/preview/mjpeg" alt="live camera" />
             <video id="viewVideo" class="hide" muted autoplay playsinline></video>
+            <div id="preview-off" class="preview-off hide">预览已关闭（省 CPU）<br /><span>算法已一并关闭；未录像时摄像头会暂停</span></div>
           </div>
         </div>
 
         <div class="toolbar">
+          <button type="button" id="btn-preview-toggle">关闭预览</button>
           <button type="button" id="btn-rot-l">左转</button>
           <button type="button" id="btn-rot-r">右转</button>
           <button type="button" id="btn-zoom-in">放大</button>
@@ -79,9 +81,9 @@
               <input id="de-red" type="range" min="0" max="100" value="55" />
             </div>
             <div class="field field-actions">
-              <button type="button" id="btn-dered-off">关闭</button>
-              <button type="button" id="btn-dered-mid">适中</button>
-              <button type="button" id="btn-dered-strong">强力</button>
+              <button type="button" class="seg-btn" id="btn-dered-off" data-dered="0">关闭</button>
+              <button type="button" class="seg-btn" id="btn-dered-mid" data-dered="55">适中</button>
+              <button type="button" class="seg-btn" id="btn-dered-strong" data-dered="85">强力</button>
             </div>
             <label class="check"><input id="osd" type="checkbox" checked /> 显示时间</label>
           </div>

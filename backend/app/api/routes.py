@@ -24,6 +24,17 @@ def _rt():
     return current_app.config["RUNTIME"]
 
 
+def refresh_capture_demand(runtime=None) -> bool:
+    """预览或录像需要画面时才开摄像头；算法依赖预览，不再单独拉流。"""
+    rt = runtime or _rt()
+    settings = load_settings()
+    preview_on = bool(settings.get("preview_enabled", True))
+    recording = bool(rt.recorder.info().get("recording"))
+    wanted = preview_on or recording
+    rt.source.set_capture_wanted(wanted)
+    return wanted
+
+
 def apply_settings_to_runtime(data: dict, runtime=None) -> None:
     rt = runtime or _rt()
     rt.source.set_effects(
@@ -36,6 +47,13 @@ def apply_settings_to_runtime(data: dict, runtime=None) -> None:
         fps = float(data["preview_fps"])
         rt.recorder.set_fps(fps)
         rt.preview_h264.set_fps(fps)
+    if "preview_enabled" in data:
+        enabled = bool(data.get("preview_enabled"))
+        rt.preview_mjpeg.set_enabled(enabled)
+        rt.preview_h264.set_enabled(enabled)
+        # 关预览时一并关算法（看不见框，单独跑没意义）
+        if not enabled:
+            rt.algorithm.set_mode("off")
     if "auto_record" in data:
         was_auto = rt.recorder.info().get("auto")
         rt.recorder.set_auto(bool(data["auto_record"]))
@@ -48,9 +66,20 @@ def apply_settings_to_runtime(data: dict, runtime=None) -> None:
     if "algo_model" in data:
         rt.algorithm.set_object_model(str(data.get("algo_model") or "auto"))
     if "algo_mode" in data:
-        rt.algorithm.set_mode(str(data.get("algo_mode") or "off"))
+        mode = str(data.get("algo_mode") or "off")
+        # 开算法必须带预览
+        if mode != "off" and not bool(load_settings().get("preview_enabled", True)):
+            rt.preview_mjpeg.set_enabled(True)
+            rt.preview_h264.set_enabled(True)
+            save_settings({"preview_enabled": True})
+        rt.algorithm.set_mode(mode)
     elif "face_detect" in data:
+        if bool(data["face_detect"]) and not bool(load_settings().get("preview_enabled", True)):
+            rt.preview_mjpeg.set_enabled(True)
+            rt.preview_h264.set_enabled(True)
+            save_settings({"preview_enabled": True})
         rt.algorithm.set_enabled(bool(data["face_detect"]))
+    refresh_capture_demand(rt)
 
 
 @api_bp.get("/health")
@@ -67,6 +96,7 @@ def health():
             "camera": "ready" if ready else "starting",
             "preview_mode": settings.get("preview_mode"),
             "preview_fps": effects.get("fps"),
+            "preview_enabled": bool(settings.get("preview_enabled", True)),
             "recording": rec["recording"],
             "auto_record": rec.get("auto"),
             "de_red": effects["de_red"],
@@ -95,7 +125,10 @@ def algo_face_detect():
     if "enabled" not in body:
         return jsonify({"error": "缺少 enabled"}), 400
     enabled = bool(body.get("enabled"))
-    saved = save_settings({"algo_mode": "face" if enabled else "off", "face_detect": enabled})
+    patch = {"algo_mode": "face" if enabled else "off", "face_detect": enabled}
+    if enabled:
+        patch["preview_enabled"] = True
+    saved = save_settings(patch)
     apply_settings_to_runtime(saved)
     return jsonify({"ok": True, "face_detect": enabled, **_rt().algorithm.status()})
 
@@ -106,9 +139,13 @@ def algo_mode():
     mode = str(body.get("mode") or "off").lower()
     if mode not in ("off", "face", "object"):
         return jsonify({"error": "mode 应为 off|face|object"}), 400
-    saved = save_settings({"algo_mode": mode, "face_detect": mode == "face"})
+    patch = {"algo_mode": mode, "face_detect": mode == "face"}
+    # 开算法时自动打开预览
+    if mode != "off":
+        patch["preview_enabled"] = True
+    saved = save_settings(patch)
     apply_settings_to_runtime(saved)
-    return jsonify({"ok": True, **_rt().algorithm.status()})
+    return jsonify({"ok": True, "preview_enabled": saved.get("preview_enabled"), **_rt().algorithm.status()})
 
 
 @api_bp.post("/algo/model")
@@ -169,8 +206,19 @@ def preview_mjpeg():
 @api_bp.post("/snapshot")
 @api_bp.get("/snapshot")
 def snapshot():
+    import time
+
     rt = _rt()
     frame, _ = rt.hub.get_latest()
+    if frame is None:
+        # 预览关闭导致摄像头暂停时，临时拉起取一帧
+        rt.source.request_brief_capture(4.0)
+        for _ in range(40):
+            time.sleep(0.1)
+            frame, _ = rt.hub.get_latest()
+            if frame is not None:
+                break
+        refresh_capture_demand(rt)
     if frame is None:
         return jsonify({"error": "还没有画面"}), 503
     settings = load_settings()
@@ -196,6 +244,7 @@ def record_start():
         path = rt.recorder.start_recording()
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 400
+    refresh_capture_demand(rt)
     return jsonify({"ok": True, "file": path.name})
 
 
@@ -206,6 +255,7 @@ def record_stop():
     # resume_auto=true：封装当前段后按自动录制设置立刻续录（用于「停止并预览」）
     resume_auto = bool(body.get("resume_auto", False))
     path = rt.recorder.stop_recording(pause_auto=not resume_auto)
+    refresh_capture_demand(rt)
     if path is None:
         return jsonify({"error": "当前没有在录制"}), 400
     info = rt.recorder.info()

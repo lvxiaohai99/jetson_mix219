@@ -21,12 +21,16 @@ def _normalize(data: dict[str, Any]) -> dict[str, Any]:
         mode = "mjpeg_hw"
     out["preview_mode"] = mode
     out["preview_fps"] = int(max(5, min(30, int(out.get("preview_fps", 15)))))
+    out["preview_enabled"] = bool(out.get("preview_enabled", True))
     out["auto_record"] = bool(out.get("auto_record", False))
     out["retention_days"] = int(max(1, min(365, int(out.get("retention_days", 7)))))
     # 算法模式：优先 algo_mode；兼容旧 face_detect
     mode = str(out.get("algo_mode") or "").lower()
     if mode not in ("off", "face", "object"):
         mode = "face" if bool(out.get("face_detect", False)) else "off"
+    # 关预览时不允许挂着算法（画面上看不见，白占 CPU）
+    if not out["preview_enabled"]:
+        mode = "off"
     out["algo_mode"] = mode
     out["face_detect"] = mode == "face"
     model = str(out.get("algo_model") or "auto").lower()
@@ -57,6 +61,7 @@ def save_settings(patch: dict[str, Any]) -> dict[str, Any]:
         "osd",
         "preview_mode",
         "preview_fps",
+        "preview_enabled",
         "auto_record",
         "retention_days",
         "face_detect",
