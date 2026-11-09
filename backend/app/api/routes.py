@@ -176,7 +176,8 @@ def calendar_day():
         datetime.strptime(date_str, "%Y-%m-%d")
     except ValueError:
         return jsonify({"error": "日期格式应为 YYYY-MM-DD"}), 400
-    return jsonify(media_index.day_items(date_str))
+    active = _rt().recorder.info().get("file")
+    return jsonify(media_index.day_items(date_str, active_recording=active))
 
 
 @api_bp.get("/storage")

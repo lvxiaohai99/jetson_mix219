@@ -3,6 +3,7 @@ from __future__ import annotations
 import calendar
 import logging
 import re
+import subprocess
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -15,7 +16,11 @@ _NAME_RE = re.compile(r"^(?:snapshot|record)_(\d{8})_(\d{6})")
 
 
 def _parse_file_dt(path: Path) -> datetime | None:
-    m = _NAME_RE.match(path.stem)
+    # record_xxx.part.mp4 → stem 先去掉 .part
+    stem = path.stem
+    if stem.endswith(".part"):
+        stem = stem[: -len(".part")]
+    m = _NAME_RE.match(stem)
     if m:
         try:
             return datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
@@ -25,6 +30,30 @@ def _parse_file_dt(path: Path) -> datetime | None:
         return datetime.fromtimestamp(path.stat().st_mtime)
     except Exception:
         return None
+
+
+def is_playable_mp4(path: Path) -> bool:
+    """快速判断 MP4 是否带有可解析头（录制中的旧格式会失败）。"""
+    try:
+        if not path.is_file() or path.stat().st_size < 64:
+            return False
+        # 分片 MP4（.part）本身可读
+        if path.name.endswith(".part.mp4"):
+            return True
+        out = subprocess.check_output(
+            [
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1",
+                str(path),
+            ],
+            text=True,
+            timeout=8,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        return bool(out) and out.lower() != "n/a"
+    except Exception:
+        return False
 
 
 def _iter_media_files() -> list[tuple[Path, str, datetime]]:
@@ -39,8 +68,13 @@ def _iter_media_files() -> list[tuple[Path, str, datetime]]:
             for p in folder.glob(pat):
                 if not p.is_file() or p.name.startswith("."):
                     continue
+                # 有正式 mp4 时忽略同名 avi；有正式 mp4 时忽略仍残留的 .part
                 if p.suffix.lower() == ".avi" and p.with_suffix(".mp4").exists():
                     continue
+                if p.name.endswith(".part.mp4"):
+                    final = Path(str(p)[: -len(".part.mp4")] + ".mp4")
+                    if final.exists() and final.stat().st_size > 0:
+                        continue
                 dt = _parse_file_dt(p)
                 if dt is None:
                     continue
@@ -90,7 +124,7 @@ def calendar_month(year: int, month: int) -> dict:
     }
 
 
-def day_items(date_str: str) -> dict:
+def day_items(date_str: str, active_recording: str | None = None) -> dict:
     day = datetime.strptime(date_str, "%Y-%m-%d")
     start = day.replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + timedelta(days=1)
@@ -99,14 +133,39 @@ def day_items(date_str: str) -> dict:
         if not (start <= dt < end):
             continue
         prefix = "/files/snapshots" if kind == "snapshot" else "/files/recordings"
+        in_progress = False
+        playable = True
+        display_name = path.name
+        url_name = path.name
+        if kind == "recording":
+            stem = path.name
+            if stem.endswith(".part.mp4"):
+                in_progress = True
+                display_name = stem.replace(".part.mp4", ".mp4")
+                playable = True  # 分片文件可预览
+            elif active_recording and path.name == active_recording:
+                # 兼容旧写入器：正在写的标准 mp4 通常还没有 moov
+                part = path.with_suffix(".part.mp4")
+                if part.exists():
+                    url_name = part.name
+                    in_progress = True
+                    playable = True
+                else:
+                    in_progress = True
+                    playable = is_playable_mp4(path)
+            else:
+                playable = is_playable_mp4(path)
         items.append(
             {
-                "name": path.name,
-                "kind": "截图" if kind == "snapshot" else "录像",
+                "name": display_name,
+                "file": url_name,
+                "kind": "截图" if kind == "snapshot" else ("录像中" if in_progress else "录像"),
                 "kind_id": kind,
                 "time": dt.strftime("%H:%M:%S"),
-                "url": f"{prefix}/{path.name}",
+                "url": f"{prefix}/{url_name}",
                 "size_mb": round(path.stat().st_size / 1024 / 1024, 2),
+                "playable": playable,
+                "recording": in_progress,
             }
         )
     items.sort(key=lambda x: x["time"])

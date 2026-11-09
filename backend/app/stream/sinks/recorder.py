@@ -17,10 +17,14 @@ LOG = logging.getLogger("webcam.recorder")
 
 
 class FFmpegH264Writer:
+    """边录边可预览：写入分片 MP4；停止后再封装成带 moov 的标准文件。"""
+
     def __init__(self, path: Path, width: int, height: int, fps: float = 15.0, crf: int = H264_CRF) -> None:
         self.width = width - (width % 2)
         self.height = height - (height % 2)
-        self.path = path
+        self.final_path = path
+        self.part_path = path.with_suffix(".part.mp4")
+        # 分片 MP4：录制过程中就有 moov，浏览器/ffprobe 可读
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
             "-f", "rawvideo", "-pix_fmt", "bgr24",
@@ -30,8 +34,9 @@ class FFmpegH264Writer:
             "-an",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf),
             "-pix_fmt", "yuv420p",
-            "-movflags", "+faststart",
-            str(path),
+            "-g", "30",
+            "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+            str(self.part_path),
         ]
         self.proc = subprocess.Popen(
             cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
@@ -44,7 +49,7 @@ class FFmpegH264Writer:
             frame = cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_AREA)
         self.proc.stdin.write(frame.tobytes())
 
-    def release(self) -> None:
+    def release(self) -> Path | None:
         try:
             if self.proc.stdin is not None:
                 self.proc.stdin.close()
@@ -55,6 +60,35 @@ class FFmpegH264Writer:
         except subprocess.TimeoutExpired:
             self.proc.kill()
             self.proc.wait()
+
+        if not self.part_path.exists() or self.part_path.stat().st_size <= 0:
+            LOG.warning("录像临时文件无效: %s", self.part_path)
+            return None
+
+        # 封装成标准 MP4（moov 在文件头），方便网页预览与拖动进度条
+        try:
+            cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                "-i", str(self.part_path),
+                "-c", "copy",
+                "-movflags", "+faststart",
+                str(self.final_path),
+            ]
+            subprocess.check_call(cmd, timeout=120)
+            self.part_path.unlink(missing_ok=True)
+            LOG.info("录像已封装: %s", self.final_path)
+            return self.final_path
+        except Exception as e:
+            LOG.warning("封装失败，保留分片文件供预览: %s", e)
+            # 回退：把 part 改名为最终文件（分片格式，多数浏览器仍可播）
+            try:
+                if self.final_path.exists():
+                    self.final_path.unlink()
+                self.part_path.rename(self.final_path)
+                return self.final_path
+            except Exception as e2:
+                LOG.error("保留录像失败: %s", e2)
+                return None
 
 
 class RecorderSink:
@@ -137,7 +171,7 @@ class RecorderSink:
         self._path = path
         self._recording = True
         self._segment_key = now.strftime("%Y%m%d_%H")
-        LOG.info("开始录制: %s", path)
+        LOG.info("开始录制: %s (临时 %s)", path, self._writer.part_path)
         return path
 
     def _close_writer_locked(self) -> Path | None:
@@ -149,10 +183,11 @@ class RecorderSink:
         self._recording = False
         self._path = None
         self._segment_key = None
+        final = None
         if writer is not None:
-            writer.release()
-        LOG.info("停止录制: %s", path)
-        return path
+            final = writer.release()
+        LOG.info("停止录制: %s", final or path)
+        return final or path
 
     def _on_frame(self, frame: np.ndarray, _meta: dict) -> None:
         with self._lock:

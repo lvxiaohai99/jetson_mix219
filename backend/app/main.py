@@ -54,7 +54,9 @@ def create_app() -> Flask:
 
     @app.get("/files/recordings/<path:name>")
     def file_recording(name: str):
-        as_attachment = not name.lower().endswith(".mp4")
+        lower = name.lower()
+        # 正式 mp4 / 录制中的分片 part.mp4 都给网页播放，不要强制下载
+        as_attachment = not (lower.endswith(".mp4"))
         return send_from_directory(RECORD_DIR, name, as_attachment=as_attachment)
 
     return app

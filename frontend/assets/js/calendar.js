@@ -81,11 +81,21 @@
       dayPreview.innerHTML = `
         <p><a href="${it.url}" download>${it.name}</a></p>
         <img src="${it.url}" alt="${it.name}" />`;
-    } else {
-      dayPreview.innerHTML = `
-        <p><a href="${it.url}" download>${it.name}</a></p>
-        <video class="playback" controls playsinline src="${it.url}"></video>`;
+      return;
     }
+    const tip = it.recording
+      ? '<p class="empty">正在录制中，可试播当前片段；停止后会生成完整文件。</p>'
+      : (it.playable === false
+        ? '<p class="empty">文件未完成封装，无法预览。请停止录制后重试，或删掉损坏文件重新录。</p>'
+        : '');
+    if (it.playable === false) {
+      dayPreview.innerHTML = `<p>${it.name}</p>${tip}`;
+      return;
+    }
+    dayPreview.innerHTML = `
+      <p><a href="${it.url}" download>${it.name}</a></p>
+      ${tip}
+      <video class="playback" controls playsinline preload="metadata" src="${it.url}?t=${Date.now()}"></video>`;
   }
 
   async function refresh(){
