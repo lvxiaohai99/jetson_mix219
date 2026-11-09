@@ -13,4 +13,4 @@ echo "启动后请用浏览器打开："
 echo "  局域网:   http://$(hostname -I | awk '{print $1}'):8080"
 echo "  Tailscale: http://$(tailscale ip -4 2>/dev/null || echo '100.x.x.x'):8080"
 echo
-exec python3 app.py
+exec python3 -m backend.app.main

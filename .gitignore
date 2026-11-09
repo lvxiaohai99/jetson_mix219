@@ -1,5 +1,7 @@
-recordings/
-snapshots/
+recordings/*
+!recordings/.gitkeep
+snapshots/*
+!snapshots/.gitkeep
 __pycache__/
 *.pyc
 *.avi

@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>摄像头预览</title>
+  <link rel="stylesheet" href="/assets/css/app.css" />
+  <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.js"></script>
+</head>
+<body>
+  <main class="home">
+    <header class="home-head">
+      <h1>IMX219 实时预览</h1>
+    </header>
+
+    <div class="home-layout">
+      <aside class="cal-side">
+        <div class="cal-bar">
+          <button type="button" id="btn-prev">‹</button>
+          <strong id="cal-title">----年--月</strong>
+          <button type="button" id="btn-next">›</button>
+          <button type="button" id="btn-today">今天</button>
+          <span class="hint-q" tabindex="0" aria-label="日历说明">?
+            <span class="hint-tip">绿点＝当天有截图/录像<br>灰点＝没有<br>点日期可查看文件</span>
+          </span>
+        </div>
+        <div class="cal-grid cal-head">
+          <div>一</div><div>二</div><div>三</div><div>四</div><div>五</div><div>六</div><div>日</div>
+        </div>
+        <div class="cal-grid" id="cal-body"></div>
+        <div class="cal-day-panel">
+          <h2 id="day-title">请选择日期</h2>
+          <ul id="day-list"><li class="empty">暂无</li></ul>
+          <div id="day-preview" class="day-preview hide"></div>
+        </div>
+      </aside>
+
+      <section class="home-main">
+        <div class="stage-wrap">
+          <div class="stage">
+            <div id="osd-clock">--:--:--</div>
+            <img id="view" src="/api/preview/mjpeg" alt="live camera" />
+            <video id="viewVideo" class="hide" muted autoplay playsinline></video>
+          </div>
+        </div>
+
+        <div class="toolbar">
+          <button type="button" id="btn-rot-l">左转</button>
+          <button type="button" id="btn-rot-r">右转</button>
+          <button type="button" id="btn-zoom-in">放大</button>
+          <button type="button" id="btn-zoom-out">缩小</button>
+          <button type="button" id="btn-reset">复位</button>
+          <button type="button" class="primary" id="btn-lock">锁定当前设置</button>
+          <button type="button" class="primary" id="btn-shot">截图</button>
+          <button type="button" class="primary" id="btn-rec-start">开始录制</button>
+          <button type="button" class="danger" id="btn-rec-stop" disabled>停止录制</button>
+        </div>
+
+        <div class="controls-stack">
+          <div class="ctrl-row">
+            <div class="field">
+              <label for="preview-mode">预览编码</label>
+              <select id="preview-mode"></select>
+            </div>
+            <div class="field field-grow">
+              <label for="preview-fps">预览帧数 <span id="fps-val">15</span></label>
+              <input id="preview-fps" type="range" min="5" max="30" step="1" value="15" />
+            </div>
+            <div class="field field-actions">
+              <button type="button" id="btn-bench">实测10秒CPU</button>
+              <button type="button" id="btn-bench-save">设为默认</button>
+            </div>
+          </div>
+          <p id="bench-result" class="bench-result empty"></p>
+
+          <div class="ctrl-row">
+            <div class="field field-grow">
+              <label for="de-red">去红边 <span id="de-red-val">55</span></label>
+              <input id="de-red" type="range" min="0" max="100" value="55" />
+            </div>
+            <div class="field field-actions">
+              <button type="button" id="btn-dered-off">关闭</button>
+              <button type="button" id="btn-dered-mid">适中</button>
+              <button type="button" id="btn-dered-strong">强力</button>
+            </div>
+            <label class="check"><input id="osd" type="checkbox" checked /> 显示时间</label>
+          </div>
+
+          <div class="ctrl-row">
+            <label class="check"><input id="auto-record" type="checkbox" /> 默认自动录制</label>
+            <div class="field field-grow">
+              <label for="retention-days">滚存天数 <span id="retention-val">7</span></label>
+              <input id="retention-days" type="range" min="1" max="30" step="1" value="7" />
+            </div>
+          </div>
+          <p id="storage-hint" class="storage-hint empty">预计占用：--</p>
+        </div>
+        <div class="status" id="status">就绪</div>
+      </section>
+    </div>
+  </main>
+  <script src="/assets/js/calendar.js"></script>
+  <script src="/assets/js/preview.js"></script>
+</body>
+</html>
