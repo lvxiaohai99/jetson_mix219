@@ -37,17 +37,9 @@ pip3 install -r requirements.txt
 
 ### 物体识别怎么开
 
-1. 按 [doc/算法与模型.md](doc/算法与模型.md) 把权重放到 `models/`（至少 `yolov8n.pt`）  
+1. 仓库 `models/` 已带常用权重；缺文件时按 [doc/算法与模型.md](doc/算法与模型.md) 补下载  
 2. 网页「算法验证」选 **物体识别**，「识别模型」选 **YOLOv8n** 或自动  
 3. 无人时也可验证：`python3 scripts/verify_algo.py`
-
-常用下载（放到 `models/`）：
-
-| 文件 | 地址 |
-|------|------|
-| `yolov8n.pt` | https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.pt |
-| `fasterrcnn_mobilenet_v3_large_320_fpn.pth` | https://download.pytorch.org/models/fasterrcnn_mobilenet_v3_large_320_fpn-907ea3f9.pth |
-| `ssdlite320_mobilenet_v3_large_coco.pth` | https://download.pytorch.org/models/ssdlite320_mobilenet_v3_large_coco-a79551df.pth |
 
 ## 目录
 

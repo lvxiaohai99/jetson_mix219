@@ -9,10 +9,10 @@ __pycache__/
 *.jpg
 settings.json
 !requirements.txt
-models/*.pth
-models/*.pt
+# 大权重已纳入仓库（yolov8n / fasterrcnn / ssdlite）；其它格式仍忽略
 models/*.onnx
 models/*.caffemodel
+models/*.engine
 !models/.gitkeep
 testdata/*
 !testdata/.gitkeep
