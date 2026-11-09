@@ -1,0 +1,9 @@
+recordings/
+snapshots/
+__pycache__/
+*.pyc
+*.avi
+*.mp4
+*.jpg
+settings.json
+!requirements.txt
