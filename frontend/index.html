@@ -42,6 +42,7 @@
             <img id="view" src="/api/preview/mjpeg" alt="live camera" />
             <video id="viewVideo" class="hide" muted autoplay playsinline></video>
             <div id="preview-off" class="preview-off hide">预览已关闭（省 CPU）<br /><span>算法已一并关闭；未录像时摄像头会暂停</span></div>
+            <div id="camera-banner" class="camera-banner hide"></div>
           </div>
         </div>
 
@@ -116,6 +117,41 @@
           </div>
         </div>
         <div class="status" id="status">就绪</div>
+
+        <section class="device-panel" id="device-panel" aria-label="设备状态">
+          <div class="device-head">
+            <h2>设备状态</h2>
+            <div class="device-head-actions">
+              <button type="button" class="primary" id="btn-recover-cam">恢复摄像头</button>
+              <span id="device-updated" class="device-updated">--</span>
+            </div>
+          </div>
+          <p class="device-cma-note">
+            CMA 是 Jetson CSI/Argus 专用的连续物理内存，本机总量约 <strong>256MB</strong>；
+            与下面「内存」条不是同一块。开流、失败重试、异常退出都会占住 CMA，所以会很快见底。
+          </p>
+          <div class="device-meters">
+            <div class="meter">
+              <div class="meter-label"><span>CPU</span><strong id="meter-cpu">--%</strong></div>
+              <div class="meter-bar"><i id="bar-cpu" style="width:0%"></i></div>
+            </div>
+            <div class="meter">
+              <div class="meter-label"><span>内存</span><strong id="meter-mem">--</strong></div>
+              <div class="meter-bar"><i id="bar-mem" style="width:0%"></i></div>
+            </div>
+            <div class="meter">
+              <div class="meter-label"><span>CMA（总量 256MB）</span><strong id="meter-cma">--</strong></div>
+              <div class="meter-bar"><i id="bar-cma" style="width:0%"></i></div>
+            </div>
+          </div>
+          <div class="device-meta" id="device-meta">摄像头：-- · Argus：-- · Load：--</div>
+          <p id="device-hint" class="device-hint hide"></p>
+          <p id="recover-status" class="recover-status hide"></p>
+          <div class="device-top">
+            <div class="device-top-head"><span>Top 进程</span><span>CPU / RSS</span></div>
+            <ol id="device-top-list" class="device-top-list"><li class="empty">采样中…</li></ol>
+          </div>
+        </section>
       </section>
     </div>
   </main>

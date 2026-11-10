@@ -20,13 +20,245 @@
   const btnPreviewToggle = document.getElementById('btn-preview-toggle');
   const stageEl = document.getElementById('stage');
   const previewOffEl = document.getElementById('preview-off');
+  const cameraBanner = document.getElementById('camera-banner');
+  const meterCpu = document.getElementById('meter-cpu');
+  const meterMem = document.getElementById('meter-mem');
+  const meterCma = document.getElementById('meter-cma');
+  const barCpu = document.getElementById('bar-cpu');
+  const barMem = document.getElementById('bar-mem');
+  const barCma = document.getElementById('bar-cma');
+  const deviceMeta = document.getElementById('device-meta');
+  const deviceHint = document.getElementById('device-hint');
+  const deviceTopList = document.getElementById('device-top-list');
+  const deviceUpdated = document.getElementById('device-updated');
+  const btnRecoverCam = document.getElementById('btn-recover-cam');
+  const recoverStatus = document.getElementById('recover-status');
+  let recoverReady = false;
+  let recovering = false;
 
   let rotate = 0, scale = 1, deRedTimer = null, previewMode = 'mjpeg_hw';
   let previewEnabled = true;
   let fpsTimer = null, retentionTimer = null;
   let mpegtsPlayer = null;
 
+  const CAM_LABEL = {
+    ready: '正常',
+    starting: '启动中',
+    paused: '已暂停',
+    open_failed: '打开失败',
+    no_frame: '无画面',
+    argus_busy: 'Argus占用',
+    cma_low: 'CMA不足',
+  };
+
   function setStatus(t){ statusEl.textContent = t; }
+
+  function setBar(el, pct){
+    if (!el) return;
+    const v = Math.max(0, Math.min(100, Number(pct) || 0));
+    el.style.width = v + '%';
+    el.classList.toggle('hot', v >= 90);
+  }
+
+  function showCameraBanner(cam){
+    if (!cameraBanner) return;
+    const st = (cam && cam.state) || '';
+    const bad = ['open_failed', 'no_frame', 'argus_busy', 'cma_low'].includes(st);
+    if (!bad || !previewEnabled) {
+      cameraBanner.classList.add('hide');
+      cameraBanner.textContent = '';
+      return;
+    }
+    const hint = (cam && (cam.hint || cam.detail)) || CAM_LABEL[st] || st;
+    cameraBanner.textContent = '摄像头异常：' + hint;
+    cameraBanner.classList.toggle('warn', st === 'starting' || st === 'no_frame');
+    cameraBanner.classList.remove('hide');
+  }
+
+  function renderDeviceStatus(data){
+    if (!data) return;
+    const cpu = data.cpu_percent ?? 0;
+    const mem = data.memory || {};
+    const cma = data.cma || {};
+    const cam = data.camera || {};
+    if (meterCpu) meterCpu.textContent = cpu.toFixed(1) + '%';
+    setBar(barCpu, cpu);
+    if (meterMem) {
+      meterMem.textContent = `${mem.used_mb ?? '-'} / ${mem.total_mb ?? '-'} MB (${mem.percent ?? '-'}%)`;
+    }
+    setBar(barMem, mem.percent);
+    if (meterCma) {
+      const total = cma.total_mb ?? 256;
+      meterCma.textContent = `剩余 ${cma.free_mb ?? '-'} / ${total} MB`;
+    }
+    setBar(barCma, cma.used_percent);
+    if (barCma) barCma.classList.toggle('hot', !!cma.low);
+
+    recoverReady = !!(data.recover && data.recover.ready);
+    if (btnRecoverCam && !recovering) {
+      btnRecoverCam.title = recoverReady
+        ? '释放摄像头并重启 Argus，回收 CMA'
+        : '需先在设备上执行一次免密配置（见下方提示）';
+    }
+
+    const load = (data.loadavg || []).map(x => Number(x).toFixed(2)).join(' / ') || '--';
+    const camState = cam.state || '--';
+    const camText = CAM_LABEL[camState] || camState;
+    const argus = data.nvargus_active === true ? '运行中' : (data.nvargus_active === false ? '未运行' : '未知');
+    if (deviceMeta) {
+      deviceMeta.textContent =
+        `摄像头：${camText}` +
+        (cam.detail ? `（${cam.detail}）` : '') +
+        ` · Argus：${argus} · Load：${load}` +
+        (mem.swap_used_mb ? ` · Swap：${mem.swap_used_mb}MB` : '');
+    }
+
+    const hints = [];
+    if (cam.hint) hints.push(cam.hint);
+    (data.hints || []).forEach(h => { if (h && !hints.includes(h)) hints.push(h); });
+    if (deviceHint) {
+      if (hints.length) {
+        deviceHint.textContent = hints.join('；');
+        deviceHint.classList.remove('hide');
+      } else {
+        deviceHint.textContent = '';
+        deviceHint.classList.add('hide');
+      }
+    }
+
+    if (deviceTopList) {
+      const rows = data.top_processes || [];
+      if (!rows.length) {
+        deviceTopList.innerHTML = '<li class="empty">暂无进程数据</li>';
+      } else {
+        deviceTopList.innerHTML = rows.map((p, i) =>
+          `<li><span class="rank">${i + 1}</span>` +
+          `<span class="pname" title="pid ${p.pid}">${p.name || p.pid}</span>` +
+          `<span class="pstat">${Number(p.cpu).toFixed(1)}% · ${Number(p.rss_mb).toFixed(1)}MB</span></li>`
+        ).join('');
+      }
+    }
+    if (deviceUpdated) {
+      const d = new Date();
+      deviceUpdated.textContent =
+        '更新 ' + String(d.getHours()).padStart(2,'0') + ':' +
+        String(d.getMinutes()).padStart(2,'0') + ':' +
+        String(d.getSeconds()).padStart(2,'0');
+    }
+    showCameraBanner(cam);
+  }
+
+  async function pollDeviceStatus(){
+    try{
+      const res = await fetch('/api/system/status?top=10');
+      if (!res.ok) return;
+      const data = await res.json();
+      renderDeviceStatus(data);
+    }catch(_){}
+  }
+
+  function showRecoverMsg(text, isErr){
+    if (!recoverStatus) return;
+    recoverStatus.textContent = text || '';
+    recoverStatus.classList.toggle('err', !!isErr);
+    recoverStatus.classList.toggle('hide', !text);
+  }
+
+  function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+  async function waitPreviewBack(timeoutMs){
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeoutMs) {
+      await sleep(1000);
+      try{
+        const res = await fetch('/api/health');
+        const data = await res.json().catch(() => null);
+        if (data && (data.ok || data.camera === 'ready')) return data;
+      }catch(_){
+        // 服务重启瞬间会连不上，继续等
+      }
+    }
+    return null;
+  }
+
+  async function recoverCamera(){
+    if (recovering) return;
+    recovering = true;
+    if (btnRecoverCam) btnRecoverCam.disabled = true;
+    showRecoverMsg('正在释放摄像头并重启 Argus（约需数秒）…', false);
+    setStatus('正在恢复摄像头…');
+    try{
+      const res = await fetch('/api/system/recover-camera', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: '{}',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const setup = data.setup_cmd || '';
+        const tip = data.need_setup && setup
+          ? `需先配置免密（只需一次）。请在设备终端执行：${setup}`
+          : (`恢复失败：` + (data.error || res.statusText || '未知错误'));
+        showRecoverMsg(tip, true);
+        setStatus(tip);
+        await pollDeviceStatus();
+        return;
+      }
+
+      if (data.restarting_service) {
+        showRecoverMsg(data.message || '正在重启预览服务，请稍候…', false);
+        setStatus('预览服务重启中，等待重连…');
+        const back = await waitPreviewBack(20000);
+        if (!back) {
+          const tip = '服务已重启但尚未出画，请手动刷新页面；仍不行再重启整机';
+          showRecoverMsg(tip, true);
+          setStatus(tip);
+          return;
+        }
+        showRecoverMsg('服务已恢复，正在重新拉流…', false);
+      } else if (!data.frame_ready) {
+        showRecoverMsg((data.message || '仍无首帧') + '，继续等待…', false);
+        await waitPreviewBack(8000);
+      }
+
+      const cma = data.cma || {};
+      const msg = (data.message || '恢复完成') +
+        ` · CMA 剩余 ${cma.free_mb ?? '-'} / ${cma.total_mb ?? 256} MB`;
+      showRecoverMsg(msg, false);
+      setStatus(msg);
+      // 重新同步设置并拉流（服务重启后内存状态会丢）
+      try { await syncState(); } catch(_) {}
+      if (previewEnabled) {
+        if (previewMode === 'h264_soft') startH264();
+        else startMjpeg();
+      }
+      await pollDeviceStatus();
+    }catch(e){
+      // 服务重启时请求可能被掐断，改为轮询等待
+      showRecoverMsg('连接中断，正在等待服务重启…', false);
+      const back = await waitPreviewBack(20000);
+      if (back) {
+        showRecoverMsg('服务已恢复', false);
+        try { await syncState(); } catch(_) {}
+        if (previewEnabled) {
+          if (previewMode === 'h264_soft') startH264();
+          else startMjpeg();
+        }
+        await pollDeviceStatus();
+      } else {
+        const tip = '恢复失败：' + String(e) + '。可手动刷新页面，或重启整机';
+        showRecoverMsg(tip, true);
+        setStatus(tip);
+      }
+    }finally{
+      recovering = false;
+      if (btnRecoverCam) btnRecoverCam.disabled = false;
+    }
+  }
+
+  if (btnRecoverCam) {
+    btnRecoverCam.onclick = () => recoverCamera();
+  }
   window.setStatus = setStatus;
   function pad2(n){ return String(n).padStart(2,'0'); }
   function tickOsd(){
@@ -128,7 +360,8 @@
       setStatus('预览已开启');
     } else {
       stopPreviewStream();
-      setStatus('预览已关闭（算法已关；未录像时摄像头暂停）');
+      setStatus('预览已关闭（已停采）。若再打开失败，请点「恢复摄像头」');
+      setTimeout(() => { pollDeviceStatus(); }, 800);
     }
   }
 
@@ -419,8 +652,10 @@
 
   tickOsd(); setInterval(tickOsd, 1000); applyOsdVisible();
   syncState();
+  pollDeviceStatus();
   setInterval(syncRecordButtons, 5000);
   setInterval(pollAlgo, 1000);
+  setInterval(pollDeviceStatus, 3000);
   // 日历绿点轻量刷新；正在看视频/全屏时不会拆掉播放器
   setInterval(() => {
     if (window.MediaCalendar && typeof window.MediaCalendar.softRefresh === 'function') {

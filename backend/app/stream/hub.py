@@ -54,3 +54,9 @@ class FrameHub:
     def has_frame(self) -> bool:
         with self._lock:
             return self._frame is not None
+
+    def clear(self) -> None:
+        """暂停采集时清掉缓存帧，避免 health 仍显示 ready。"""
+        with self._lock:
+            self._frame = None
+            self._meta = {}

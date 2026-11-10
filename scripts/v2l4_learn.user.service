@@ -1,0 +1,18 @@
+[Unit]
+Description=v2l4_learn webcam preview service
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/lht/sync/v2l4_learn
+Environment=PORT=8080
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/bin/bash -c 'systemctl --user is-active nvargus-daemon.service >/dev/null 2>&1 || true; for i in 1 2 3 4 5 6 7 8 9 10; do systemctl is-active --quiet nvargus-daemon 2>/dev/null && break; sleep 1; done; true'
+ExecStart=/usr/bin/python3 -m backend.app.main
+Restart=on-failure
+RestartSec=5
+KillMode=control-group
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

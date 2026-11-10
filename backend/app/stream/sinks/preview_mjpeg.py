@@ -93,10 +93,16 @@ class PreviewMjpegSink:
 
 
 def mjpeg_generator(sink: PreviewMjpegSink):
+    idle = 0
     while True:
+        if not sink.stats().get("enabled", True):
+            # 预览关闭：结束生成器，让 HTTP 长连接断开，避免空转占线程
+            return
         jpeg = sink.get_jpeg()
         if jpeg is None:
-            time.sleep(0.05)
+            idle += 1
+            time.sleep(0.2 if idle > 10 else 0.05)
             continue
+        idle = 0
         yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
         time.sleep(0.03)

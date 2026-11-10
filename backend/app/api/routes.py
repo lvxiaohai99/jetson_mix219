@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import threading
 from datetime import datetime
 from pathlib import Path
 
@@ -12,6 +13,12 @@ from flask_sock import Sock
 from backend.app.config import PREVIEW_MODES, RECORD_DIR, SNAP_DIR
 from backend.app.services import media_index, metrics_probe
 from backend.app.services.settings_store import load_settings, save_settings
+from backend.app.services.system_status import (
+    can_restart_nvargus_nopass,
+    collect_system_status,
+    restart_nvargus_daemon,
+    _cma_snapshot,
+)
 from backend.app.stream.effects import draw_osd
 from backend.app.stream.sinks.preview_mjpeg import mjpeg_generator
 
@@ -32,11 +39,40 @@ def refresh_capture_demand(runtime=None) -> bool:
     recording = bool(rt.recorder.info().get("recording"))
     wanted = preview_on or recording
     rt.source.set_capture_wanted(wanted)
+    if not wanted:
+        rt.hub.clear()
     return wanted
+
+
+def _pause_capture_reclaim(rt) -> dict:
+    """关闭预览：只停采并释放管道，不重启 Argus。
+
+    重要：同进程里重启 nvargus 会弄脏 libargus 客户端，导致「再开预览」必然
+    Failed to create CaptureSession / no_frame。CMA 回收请用「恢复摄像头」按钮。
+    """
+    rt.preview_mjpeg.set_enabled(False)
+    rt.preview_h264.set_enabled(False)
+    cma_before = _cma_snapshot()
+    released = rt.source.pause_and_release(timeout=6.0)
+    rt.hub.clear()
+    cma_after = _cma_snapshot()
+    LOG.info(
+        "关预览: released=%s cma %.2f→%.2f MB（未重启 Argus，避免弄脏客户端）",
+        released,
+        cma_before.get("free_mb"),
+        cma_after.get("free_mb"),
+    )
+    return {
+        "released": released,
+        "argus": {"ok": False, "skipped": True, "reason": "close_preview_keeps_argus"},
+        "cma_before": cma_before,
+        "cma_after": cma_after,
+    }
 
 
 def apply_settings_to_runtime(data: dict, runtime=None) -> None:
     rt = runtime or _rt()
+    turning_preview_off = False
     rt.source.set_effects(
         rotate=data.get("rotate"),
         de_red=data.get("de_red"),
@@ -54,6 +90,7 @@ def apply_settings_to_runtime(data: dict, runtime=None) -> None:
         # 关预览时一并关算法（看不见框，单独跑没意义）
         if not enabled:
             rt.algorithm.set_mode("off")
+            turning_preview_off = True
     if "auto_record" in data:
         was_auto = rt.recorder.info().get("auto")
         rt.recorder.set_auto(bool(data["auto_record"]))
@@ -79,7 +116,11 @@ def apply_settings_to_runtime(data: dict, runtime=None) -> None:
             rt.preview_h264.set_enabled(True)
             save_settings({"preview_enabled": True})
         rt.algorithm.set_enabled(bool(data["face_detect"]))
-    refresh_capture_demand(rt)
+    if turning_preview_off:
+        # 关预览：强制拆管道；有免密时重启 Argus 回收 CMA
+        _pause_capture_reclaim(rt)
+    else:
+        refresh_capture_demand(rt)
 
 
 @api_bp.get("/health")
@@ -90,10 +131,19 @@ def health():
     rec = rt.recorder.info()
     effects = rt.source.get_effects()
     algo = rt.algorithm.status()
+    cam = rt.source.get_status()
+    # 暂停/错误优先展示真实状态，避免 hub 残留帧把状态刷成 ready
+    src_state = cam.get("state") or "starting"
+    if src_state in ("paused", "open_failed", "no_frame", "argus_busy", "cma_low"):
+        camera_state = src_state
+        ready = False if src_state == "paused" else ready
+    else:
+        camera_state = "ready" if ready else src_state
     return jsonify(
         {
-            "ok": ready,
-            "camera": "ready" if ready else "starting",
+            "ok": bool(ready and camera_state == "ready"),
+            "camera": camera_state,
+            "camera_detail": cam,
             "preview_mode": settings.get("preview_mode"),
             "preview_fps": effects.get("fps"),
             "preview_enabled": bool(settings.get("preview_enabled", True)),
@@ -111,6 +161,115 @@ def health():
             "h264": rt.preview_h264.stats(),
         }
     ), (200 if ready else 503)
+
+
+@api_bp.get("/system/status")
+def system_status():
+    """CPU / 内存 / CMA / Top 进程 + 摄像头状态。"""
+    rt = _rt()
+    top_n = request.args.get("top", default=10, type=int) or 10
+    data = collect_system_status(top_n=top_n)
+    cam = rt.source.get_status()
+    ready = rt.hub.has_frame()
+    src_state = cam.get("state") or "starting"
+    if src_state == "paused":
+        cam_state = "paused"
+        ready = False
+    else:
+        cam_state = "ready" if ready else src_state
+    data["camera"] = {
+        "state": cam_state,
+        **cam,
+        "hub_has_frame": ready,
+    }
+    return jsonify(data)
+
+
+def _restart_preview_service_async() -> None:
+    """后台重启本服务，清掉进程内残留的 Argus/GStreamer/NvMap 客户端。"""
+    import subprocess
+    import time as _time
+
+    def _job() -> None:
+        _time.sleep(0.4)
+        subprocess.Popen(
+            ["systemctl", "--user", "restart", "v2l4_learn.service"],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+    threading.Thread(target=_job, name="restart-v2l4", daemon=True).start()
+
+
+@api_bp.post("/system/recover-camera")
+def recover_camera():
+    """释放摄像头 → 重启 nvargus → 等首帧；仍失败则重启预览服务。"""
+    import time as _time
+
+    rt = _rt()
+    LOG.warning("收到恢复摄像头请求")
+    released = rt.source.begin_recover(timeout=6.0)
+    # 等管道真正拆掉，避免旧 client 粘在已死的 Argus 上
+    _time.sleep(1.2)
+    result = restart_nvargus_daemon()
+    if not result.get("ok"):
+        rt.source.end_recover()
+        status = 403 if result.get("need_setup") else 500
+        return jsonify(
+            {
+                "ok": False,
+                "released": released,
+                **result,
+                "camera": rt.source.get_status(),
+            }
+        ), status
+
+    # Argus 起来后再开流，避免 InvalidState / Failed to create CaptureSession
+    _time.sleep(2.0)
+    rt.hub.clear()
+    rt.source.end_recover()
+    ready = False
+    for _ in range(50):  # ~7.5s
+        _time.sleep(0.15)
+        if rt.hub.has_frame():
+            ready = True
+            break
+
+    if ready:
+        cam = rt.source.get_status()
+        return jsonify(
+            {
+                "ok": True,
+                "released": released,
+                "frame_ready": True,
+                "restarting_service": False,
+                "nvargus_active": result.get("nvargus_active"),
+                "cma": result.get("cma") or _cma_snapshot(),
+                "camera": {
+                    "state": "ready",
+                    **cam,
+                    "hub_has_frame": True,
+                },
+                "message": "已恢复，画面正常",
+            }
+        )
+
+    # 同进程里 Argus client 已脏：只重启 daemon 不够，必须重启预览服务
+    LOG.warning("Argus 已重启但仍无首帧，将重启 v2l4_learn 服务")
+    _restart_preview_service_async()
+    return jsonify(
+        {
+            "ok": True,
+            "released": released,
+            "frame_ready": False,
+            "restarting_service": True,
+            "nvargus_active": result.get("nvargus_active"),
+            "cma": result.get("cma") or _cma_snapshot(),
+            "camera": rt.source.get_status(),
+            "message": "Argus 已重启但仍无画面，正在重启预览服务，请等待约 8 秒后自动重连",
+        }
+    )
 
 
 @api_bp.get("/algo/status")
@@ -197,6 +356,8 @@ def post_settings():
 @api_bp.get("/preview/mjpeg")
 def preview_mjpeg():
     rt = _rt()
+    if not rt.preview_mjpeg.stats().get("enabled", True):
+        return Response("preview disabled", status=503)
     return Response(
         mjpeg_generator(rt.preview_mjpeg),
         mimetype="multipart/x-mixed-replace; boundary=frame",
